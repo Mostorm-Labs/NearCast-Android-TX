@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScreenCast Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0f0f1a;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        h1 { margin: 20px 0 10px; font-size: 24px; color: #7c8aff; }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 16px 0;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        input {
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-size: 14px;
+            width: 320px;
+            outline: none;
+        }
+        input:focus { border-color: #7c8aff; }
+        button {
+            padding: 10px 24px;
+            border: none;
+            border-radius: 8px;
+            background: #7c8aff;
+            color: white;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #6370e0; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        #status {
+            margin: 12px 0;
+            padding: 8px 20px;
+            border-radius: 20px;
+            background: #1a1a2e;
+            font-size: 13px;
+            border: 1px solid #333;
+        }
+        #status.connected { border-color: #4caf50; color: #4caf50; }
+        #status.receiving { border-color: #7c8aff; color: #7c8aff; }
+        #status.error { border-color: #f44336; color: #f44336; }
+        .video-container {
+            margin-top: 16px;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #000;
+            max-width: 95vw;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        video {
+            display: block;
+            max-width: 90vw;
+            max-height: 70vh;
+        }
+        .info {
+            margin-top: 20px;
+            padding: 16px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.6;
+            max-width: 500px;
+            border: 1px solid #333;
+        }
+        .info code { color: #7c8aff; }
+    </style>
+</head>
+<body>
+    <h1>ScreenCast Viewer</h1>
+
+    <div class="controls">
+        <input id="serverUrl" value="ws://localhost:8080" placeholder="Signaling Server URL">
+        <button id="connectBtn" onclick="connect()">Connect</button>
+    </div>
+
+    <div id="status">Disconnected</div>
+
+    <div class="video-container">
+        <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+
+    <div class="info">
+        <strong>Steps to test:</strong><br>
+        1. Run <code>python server.py</code> to start signaling server<br>
+        2. Click <strong>Connect</strong> on this page<br>
+        3. Open ScreenCast Demo app on Android<br>
+        4. Enter the same server URL (use your PC's IP)<br>
+        5. Tap <strong>Start Screen Cast</strong>
+    </div>
+
+    <script>
+        let ws;
+        let pc;
+        const video = document.getElementById('remoteVideo');
+        const statusEl = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+
+        function setStatus(text, className) {
+            statusEl.textContent = text;
+            statusEl.className = className || '';
+        }
+
+        function connect() {
+            const url = document.getElementById('serverUrl').value;
+            if (!url) return;
+
+            connectBtn.disabled = true;
+            setStatus('Connecting...');
+
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                setStatus('Connected, waiting for screen cast...', 'connected');
+                createPeerConnection();
+            };
+
+            ws.onmessage = async (event) => {
+                const msg = JSON.parse(event.data);
+
+                if (msg.type === 'offer') {
+                    console.log('Received offer');
+                    await pc.setRemoteDescription(
+                        new RTCSessionDescription({ type: 'offer', sdp: msg.sdp })
+                    );
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+                    setStatus('Receiving screen cast...', 'receiving');
+                } else if (msg.type === 'ice') {
+                    console.log('Received ICE candidate');
+                    try {
+                        await pc.addIceCandidate(new RTCIceCandidate({
+                            sdpMid: msg.sdpMid,
+                            sdpMLineIndex: msg.sdpMLineIndex,
+                            candidate: msg.candidate
+                        }));
+                    } catch (e) {
+                        console.error('Error adding ICE candidate:', e);
+                    }
+                } else if (msg.type === 'state') {
+                    console.log('State:', msg.state);
+                }
+            };
+
+            ws.onclose = () => {
+                setStatus('Disconnected');
+                connectBtn.disabled = false;
+            };
+
+            ws.onerror = () => {
+                setStatus('Connection error', 'error');
+                connectBtn.disabled = false;
+            };
+        }
+
+        function createPeerConnection() {
+            pc = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            });
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'ice',
+                        sdpMid: event.candidate.sdpMid,
+                        sdpMLineIndex: event.candidate.sdpMLineIndex,
+                        candidate: event.candidate.candidate
+                    }));
+                }
+            };
+
+            pc.ontrack = (event) => {
+                console.log('Received track:', event.track.kind);
+                if (event.streams && event.streams[0]) {
+                    video.srcObject = event.streams[0];
+                }
+                setStatus('Screen cast active!', 'receiving');
+            };
+
+            pc.oniceconnectionstatechange = () => {
+                console.log('ICE state:', pc.iceConnectionState);
+                if (pc.iceConnectionState === 'connected') {
+                    setStatus('Screen cast active!', 'receiving');
+                } else if (pc.iceConnectionState === 'disconnected') {
+                    setStatus('Disconnected', 'error');
+                } else if (pc.iceConnectionState === 'failed') {
+                    setStatus('Connection failed', 'error');
+                }
+            };
+        }
+    </script>
+</body>
+</html>
