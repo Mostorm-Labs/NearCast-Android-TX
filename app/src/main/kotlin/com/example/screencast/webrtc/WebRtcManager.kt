@@ -2,6 +2,7 @@ package com.example.screencast.webrtc
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
@@ -33,6 +34,8 @@ import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 
 private const val TAG = "WebRtcManager"
+private const val AUDIO_SAMPLE_RATE_HZ = 48_000
+private const val AUDIO_CHANNEL_COUNT = 1
 
 /**
  * Two-phase WebRTC manager for NearHub screen casting.
@@ -67,6 +70,18 @@ class WebRtcManager(
     private var audioTrack: AudioTrack? = null
     private var systemAudioCapture: SystemAudioCapture? = null
     private var lastRemoteAnswerSdp: String? = null
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var mutedLocalPlaybackForCasting = false
+    private var previousMusicStreamVolume: Int? = null
+    private var shouldRestoreMusicVolumeAfterCasting = false
+
+    private var injectionFrameCount = 0
+    private var emptyInjectionCount = 0
+    private var samplesReadyFrameCount = 0
+    private var audioDataCallbackCount = 0
+
+    @Volatile
+    private var isCleanupInProgress = false
 
     var isCasting = false
         private set
@@ -142,19 +157,51 @@ class WebRtcManager(
     }
 
     private fun createAudioDeviceModule(): JavaAudioDeviceModule {
+        // System audio is injected on the direct AudioRecord ByteBuffer via AudioRecordDataCallback,
+        // wired in app-local WebRtcAudioRecord (see patchStreamWebrtcAar + org/webrtc/audio sources).
         val builder = JavaAudioDeviceModule.builder(context)
-            .setInputSampleRate(48_000)
-            .setUseStereoInput(true)
+            .setInputSampleRate(AUDIO_SAMPLE_RATE_HZ)
+            .setUseStereoInput(false)
             .setUseHardwareAcousticEchoCanceler(false)
             .setUseHardwareNoiseSuppressor(false)
-            .setAudioRecordDataCallback { _, _, _, audioBuffer ->
-                val capture = systemAudioCapture ?: return@setAudioRecordDataCallback
-                val bytes = ByteArray(audioBuffer.remaining())
-                val hasSystemAudio = capture.fillAudioBuffer(bytes)
-                if (hasSystemAudio) {
-                    audioBuffer.clear()
-                    audioBuffer.put(bytes)
-                    audioBuffer.flip()
+            .setAudioRecordDataCallback { audioFormat, channelCount, sampleRate, audioBuffer ->
+                audioDataCallbackCount++
+                if (audioDataCallbackCount % 500 == 0) {
+                    Log.d(
+                        TAG,
+                        "AudioRecordDataCallback: $audioDataCallbackCount calls, cap=${audioBuffer.capacity()}, " +
+                            "pos=${audioBuffer.position()}, lim=${audioBuffer.limit()}, ch=$channelCount " +
+                            "rate=$sampleRate fmt=$audioFormat"
+                    )
+                }
+                systemAudioCapture?.let { capture ->
+                    val cap = audioBuffer.capacity()
+                    val bytes = ByteArray(cap)
+                    val hasSystemAudio = capture.fillAudioBuffer(bytes)
+                    if (hasSystemAudio) {
+                        audioBuffer.clear()
+                        audioBuffer.put(bytes)
+                        audioBuffer.flip()
+                        injectionFrameCount++
+                        if (injectionFrameCount % 500 == 0) {
+                            Log.d(TAG, "System audio injected: $injectionFrameCount frames")
+                        }
+                    } else {
+                        emptyInjectionCount++
+                        if (emptyInjectionCount % 500 == 0) {
+                            Log.w(TAG, "AudioRecordDataCallback: queue empty ($emptyInjectionCount), keeping mic")
+                        }
+                    }
+                }
+            }
+            .setSamplesReadyCallback { samples ->
+                samplesReadyFrameCount++
+                if (samplesReadyFrameCount % 500 == 0) {
+                    Log.d(
+                        TAG,
+                        "SamplesReadyCallback(diag): ${samplesReadyFrameCount} frames, ${samples.data.size} bytes, " +
+                            "ch=${samples.channelCount} rate=${samples.sampleRate} fmt=${samples.audioFormat}"
+                    )
                 }
             }
             .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
@@ -174,7 +221,7 @@ class WebRtcManager(
                 }
             })
 
-        Log.d(TAG, "Audio source configured: mic pipeline with optional playback injection")
+        Log.d(TAG, "AudioDeviceModule configured with AudioRecordDataCallback injection (patched WebRtcAudioRecord)")
 
         return builder.createAudioDeviceModule()
     }
@@ -219,9 +266,19 @@ class WebRtcManager(
     }
 
     private fun createAndSendOffer() {
+        // Detect if an audio track already exists among the senders (Phase 2 — after addTrack).
+        // When it exists, omit OfferToReceiveAudio so WebRTC includes the m=audio
+        // line with correct sendonly direction derived from the transceiver itself.
+        val hasAudioSender = peerConnection?.senders?.any {
+            it.track() is AudioTrack
+        } == true
+
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
+            // Only suppress audio in the initial Phase-1 offer when no audio sender exists.
+            if (!hasAudioSender) {
+                mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
+            }
         }
 
         peerConnection?.createOffer(object : SdpObserver {
@@ -230,6 +287,26 @@ class WebRtcManager(
                 val hasAudio = sdp.description.contains("m=audio")
                 val hasData = sdp.description.contains("m=application")
                 Log.d(TAG, "=== OFFER CREATED === video=$hasVideo audio=$hasAudio data=$hasData sdpLen=${sdp.description.length}")
+
+                // Extract and log audio m-line details for debugging.
+                if (hasAudio) {
+                    val audioLineStart = sdp.description.indexOf("m=audio")
+                    val audioLineEnd = sdp.description.indexOf("\r\n", audioLineStart)
+                    val audioLine = if (audioLineEnd > audioLineStart) {
+                        sdp.description.substring(audioLineStart, audioLineEnd)
+                    } else "m=audio line not found"
+                    Log.d(TAG, "Audio m-line: $audioLine")
+
+                    // Find audio codec info (a=rtpmap lines after m=audio)
+                    val afterAudioLine = sdp.description.substring(audioLineStart)
+                    val rtpMapLines = afterAudioLine.take(500).split("\r\n").filter { it.startsWith("a=rtpmap:") && it.contains("audio/") }
+                    Log.d(TAG, "Audio rtpmap: ${rtpMapLines.take(3).joinToString(" | ")}")
+                }
+
+                // Warn if audio track exists but m=audio is missing from SDP.
+                if (hasAudioSender && !hasAudio) {
+                    Log.w(TAG, "AUDIO TRACK EXISTS but m=audio MISSING from SDP — INVESTIGATE")
+                }
 
                 peerConnection?.setLocalDescription(NoOpSdpObserver("setLocalOffer"), sdp)
 
@@ -260,6 +337,12 @@ class WebRtcManager(
     // ── Phase 2: Screen Capture + Renegotiate ──
 
     fun startScreenCapture(resultCode: Int, data: Intent) {
+        // Reset audio injection debug counters
+        injectionFrameCount = 0
+        emptyInjectionCount = 0
+        samplesReadyFrameCount = 0
+        audioDataCallbackCount = 0
+
         try {
             screenCapturer = ScreenCapturerAndroid(data, object : MediaProjection.Callback() {
                 override fun onStop() {
@@ -289,13 +372,14 @@ class WebRtcManager(
                 val started = capture.start(
                     resultCode = resultCode,
                     data = Intent(data),
-                    sampleRate = 48_000,
-                    channelCount = 2
+                    sampleRate = AUDIO_SAMPLE_RATE_HZ,
+                    channelCount = AUDIO_CHANNEL_COUNT // Mono to match WebRTC's AudioRecord configuration
                 )
                 if (started) {
                     systemAudioCapture = capture
+                    Log.d(TAG, "SystemAudioCapture wired to audio injection callback")
+                    Log.d(TAG, "System playback capture enabled (mono 48kHz, 960 bytes/frame)")
                     onStatusChange("Audio mode: system playback capture")
-                    Log.d(TAG, "System playback capture enabled")
                 } else {
                     capture.stop()
                     systemAudioCapture = null
@@ -311,10 +395,13 @@ class WebRtcManager(
                 setEnabled(true)
             }
 
+            Log.d(TAG, "=== Creating audioSource and audioTrack ===")
             audioSource = peerConnectionFactory.createAudioSource(MediaConstraints())
             audioTrack = peerConnectionFactory.createAudioTrack("audio_track", audioSource).apply {
                 setEnabled(true)
             }
+            Log.d(TAG, "audioSource and audioTrack created, audioTrack.enabled=true")
+            Log.d(TAG, "systemAudioCapture=${systemAudioCapture != null}, audioSource=${audioSource != null}")
 
             // Stream ID is critical: the receiver uses it to group tracks into a MediaStream
             // and bind it to the video player. Without it, ontrack.streams may be empty.
@@ -324,11 +411,13 @@ class WebRtcManager(
             Log.d(TAG, "Tracks added to PeerConnection with streamId=$streamId")
 
             isCasting = true
+            muteLocalPlaybackForCasting()
             onStatusChange("Screen capture started, renegotiating...")
 
             createAndSendOffer()
         } catch (e: Exception) {
             Log.e(TAG, "startScreenCapture failed", e)
+            restoreLocalPlaybackAfterCasting()
             onStatusChange("Screen capture failed: ${e.message}")
             throw e
         }
@@ -336,7 +425,7 @@ class WebRtcManager(
 
     fun stopScreenCapture() {
         try { screenCapturer?.stopCapture() } catch (_: Exception) {}
-        screenCapturer?.dispose()
+        try { screenCapturer?.dispose() } catch (_: Exception) {}
         screenCapturer = null
         systemAudioCapture?.stop()
         systemAudioCapture = null
@@ -345,18 +434,19 @@ class WebRtcManager(
             peerConnection?.removeTrack(sender)
         }
 
-        videoTrack?.dispose()
+        try { videoTrack?.dispose() } catch (_: Exception) {}
         videoTrack = null
-        audioTrack?.dispose()
+        try { audioTrack?.dispose() } catch (_: Exception) {}
         audioTrack = null
-        videoSource?.dispose()
+        try { videoSource?.dispose() } catch (_: Exception) {}
         videoSource = null
-        audioSource?.dispose()
+        try { audioSource?.dispose() } catch (_: Exception) {}
         audioSource = null
-        surfaceTextureHelper?.dispose()
+        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
         surfaceTextureHelper = null
 
         isCasting = false
+        restoreLocalPlaybackAfterCasting()
         lastRemoteAnswerSdp = null
         onStatusChange("Casting stopped")
 
@@ -394,6 +484,15 @@ class WebRtcManager(
 
     private fun handleRemoteAnswer(sdp: String) {
         Log.d(TAG, "=== ANSWER RECEIVED === sdp length=${sdp.length}")
+        // Log audio configuration in the answer.
+        val hasAudio = sdp.contains("m=audio")
+        val audioLineStart = if (hasAudio) sdp.indexOf("m=audio") else -1
+        val audioLineEnd = if (audioLineStart >= 0) sdp.indexOf("\r\n", audioLineStart) else -1
+        if (hasAudio && audioLineEnd > audioLineStart) {
+            Log.d(TAG, "Answer audio m-line: ${sdp.substring(audioLineStart, audioLineEnd)}")
+        } else {
+            Log.d(TAG, "Answer has NO audio m-line!")
+        }
         if (lastRemoteAnswerSdp == sdp) {
             Log.d(TAG, "Duplicate answer ignored: same SDP")
             return
@@ -546,7 +645,10 @@ class WebRtcManager(
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED -> {
-                    if (isCasting) onStatusChange("Casting")
+                    if (isCasting) {
+                        logAudioTransceiverStatus()
+                        onStatusChange("Casting")
+                    }
                     else onStatusChange("P2P connected, ready to cast")
                 }
                 PeerConnection.IceConnectionState.DISCONNECTED ->
@@ -571,32 +673,117 @@ class WebRtcManager(
         override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {}
     }
 
+    /**
+     * Diagnostic method to log PeerConnection audio transceiver status.
+     * Called when ICE CONNECTED to verify audio track is properly configured.
+     */
+    private fun logAudioTransceiverStatus() {
+        try {
+            val pc = peerConnection ?: return
+            val transceivers = pc.transceivers
+            Log.d(TAG, "=== Audio Transceiver Status ===")
+            Log.d(TAG, "Total transceivers: ${transceivers.size}")
+            transceivers.forEachIndexed { index, transceiver ->
+                Log.d(TAG, "  [$index] mediaType=${transceiver.mediaType}, " +
+                        "direction=${transceiver.direction}, " +
+                        "sender.track=${transceiver.sender.track()?.id()}, " +
+                        "receiver.track=${transceiver.receiver.track()?.id()}")
+            }
+            val audioSenders = pc.senders.filter { it.track() is AudioTrack }
+            Log.d(TAG, "Audio senders count: ${audioSenders.size}")
+            audioSenders.forEach { sender ->
+                Log.d(TAG, "  AudioSender: trackId=${sender.track()?.id()}")
+            }
+            Log.d(TAG, "Audio senders: ${audioSenders.size}")
+            Log.d(TAG, "AudioRecordDataCallback count: $audioDataCallbackCount")
+            Log.d(TAG, "SamplesReadyCallback count: $samplesReadyFrameCount")
+            Log.d(TAG, "Audio injection frames: $injectionFrameCount")
+            Log.d(TAG, "Audio empty callbacks: $emptyInjectionCount")
+            Log.d(TAG, "================================")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error logging audio transceiver status", e)
+        }
+    }
+
     // ── Cleanup ──
 
     private fun cleanupP2P() {
+        if (isCleanupInProgress) return
+        isCleanupInProgress = true
+
         isCasting = false
+        restoreLocalPlaybackAfterCasting()
         isDataChannelOpen = false
         lastRemoteAnswerSdp = null
         try { screenCapturer?.stopCapture() } catch (_: Exception) {}
-        screenCapturer?.dispose()
+        try { screenCapturer?.dispose() } catch (_: Exception) {}
         screenCapturer = null
         systemAudioCapture?.stop()
         systemAudioCapture = null
-        videoTrack?.dispose()
+        try { videoTrack?.dispose() } catch (_: Exception) {}
         videoTrack = null
-        audioTrack?.dispose()
+        try { audioTrack?.dispose() } catch (_: Exception) {}
         audioTrack = null
-        videoSource?.dispose()
+        try { videoSource?.dispose() } catch (_: Exception) {}
         videoSource = null
-        audioSource?.dispose()
+        try { audioSource?.dispose() } catch (_: Exception) {}
         audioSource = null
-        surfaceTextureHelper?.dispose()
+        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
         surfaceTextureHelper = null
         dataChannel?.close()
         dataChannel = null
         peerConnection?.close()
-        peerConnection?.dispose()
+        try { peerConnection?.dispose() } catch (_: Exception) {}
         peerConnection = null
+    }
+
+    /**
+     * Mute local media playback while casting so audio only comes from receiver side.
+     * We only restore if we changed volume ourselves.
+     */
+    private fun muteLocalPlaybackForCasting() {
+        if (mutedLocalPlaybackForCasting) return
+        try {
+            val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            previousMusicStreamVolume = before
+            shouldRestoreMusicVolumeAfterCasting = before > 0
+
+            // Force media stream volume to 0 to prevent local speaker output.
+            audioManager.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                0,
+                AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                // Keep mute hint for devices that honor stream mute state.
+                audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
+            }
+            val after = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            mutedLocalPlaybackForCasting = true
+            Log.d(TAG, "Local playback mute request during casting: before=$before after=$after")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to mute local playback", e)
+        }
+    }
+
+    private fun restoreLocalPlaybackAfterCasting() {
+        if (!mutedLocalPlaybackForCasting) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+            }
+            if (shouldRestoreMusicVolumeAfterCasting) previousMusicStreamVolume?.let { prev ->
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, prev, 0)
+            }
+            val restored = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            Log.d(TAG, "Local playback volume restore after casting: restored=$restored")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to restore local playback volume", e)
+        } finally {
+            mutedLocalPlaybackForCasting = false
+            previousMusicStreamVolume = null
+            shouldRestoreMusicVolumeAfterCasting = false
+        }
     }
 
     fun stop() {
