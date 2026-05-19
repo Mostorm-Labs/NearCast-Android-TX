@@ -15,6 +15,7 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import java.util.ArrayDeque
+import java.util.concurrent.ArrayBlockingQueue
 
 private const val AUDIO_CAPTURE_TAG = "SystemAudioCapture"
 
@@ -24,6 +25,8 @@ private const val AUDIO_CAPTURE_TAG = "SystemAudioCapture"
 class SystemAudioCapture(private val context: Context) {
     private val lock = Any()
     private val queue = ArrayDeque<ByteArray>()
+    // Pool of pre-allocated buffers to avoid per-frame clone() allocations.
+    private val bufferPool = ArrayBlockingQueue<ByteArray>(16)
 
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
@@ -104,19 +107,23 @@ class SystemAudioCapture(private val context: Context) {
 
             running = true
             val frameBytes = sampleRate * channelCount * 2 / 100 // 10ms
+            // Pre-fill the pool with reusable buffers.
+            repeat(14) { bufferPool.offer(ByteArray(frameBytes)) }
             readerThread = Thread({
                 val localBuffer = ByteArray(frameBytes)
                 while (running) {
                     val bytesRead = audioRecord?.read(localBuffer, 0, localBuffer.size) ?: 0
                     if (bytesRead > 0) {
-                        val chunk = if (bytesRead == localBuffer.size) {
-                            localBuffer.clone()
-                        } else {
-                            localBuffer.copyOf(bytesRead)
+                        // Acquire a buffer from the pool; fall back to allocation only if pool is empty.
+                        val chunk = bufferPool.poll() ?: ByteArray(frameBytes)
+                        System.arraycopy(localBuffer, 0, chunk, 0, bytesRead)
+                        if (bytesRead < frameBytes) {
+                            chunk.fill(0, bytesRead, frameBytes)
                         }
                         synchronized(lock) {
                             if (queue.size >= 12) {
-                                queue.removeFirst()
+                                // Return the evicted buffer to the pool instead of discarding it.
+                                bufferPool.offer(queue.removeFirst())
                             }
                             queue.addLast(chunk)
                         }
@@ -138,19 +145,19 @@ class SystemAudioCapture(private val context: Context) {
     }
 
     fun fillAudioBuffer(target: ByteArray): Boolean {
-        synchronized(lock) {
+        val chunk = synchronized(lock) {
             if (queue.isEmpty()) return false
-            val chunk = queue.removeFirst()
-            if (chunk.size >= target.size) {
-                System.arraycopy(chunk, 0, target, 0, target.size)
-                return true
-            }
-            System.arraycopy(chunk, 0, target, 0, chunk.size)
-            for (i in chunk.size until target.size) {
-                target[i] = 0
-            }
-            return true
+            queue.removeFirst()
         }
+        if (chunk.size >= target.size) {
+            System.arraycopy(chunk, 0, target, 0, target.size)
+        } else {
+            System.arraycopy(chunk, 0, target, 0, chunk.size)
+            target.fill(0, chunk.size, target.size)
+        }
+        // Return the buffer to the pool for reuse.
+        bufferPool.offer(chunk)
+        return true
     }
 
     fun stop() {
@@ -163,6 +170,7 @@ class SystemAudioCapture(private val context: Context) {
         synchronized(lock) {
             queue.clear()
         }
+        bufferPool.clear()
 
         try {
             audioRecord?.stop()

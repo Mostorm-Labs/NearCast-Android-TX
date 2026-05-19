@@ -77,8 +77,9 @@ class WebRtcManager(
 
     private var injectionFrameCount = 0
     private var emptyInjectionCount = 0
-    private var samplesReadyFrameCount = 0
     private var audioDataCallbackCount = 0
+    // Pre-allocated reusable buffer for audio injection — avoids per-frame ByteArray allocation.
+    private var audioInjectionBuffer: ByteArray? = null
 
     @Volatile
     private var isCleanupInProgress = false
@@ -164,19 +165,13 @@ class WebRtcManager(
             .setUseStereoInput(false)
             .setUseHardwareAcousticEchoCanceler(false)
             .setUseHardwareNoiseSuppressor(false)
-            .setAudioRecordDataCallback { audioFormat, channelCount, sampleRate, audioBuffer ->
+            .setAudioRecordDataCallback { _, _, _, audioBuffer ->
                 audioDataCallbackCount++
-                if (audioDataCallbackCount % 500 == 0) {
-                    Log.d(
-                        TAG,
-                        "AudioRecordDataCallback: $audioDataCallbackCount calls, cap=${audioBuffer.capacity()}, " +
-                            "pos=${audioBuffer.position()}, lim=${audioBuffer.limit()}, ch=$channelCount " +
-                            "rate=$sampleRate fmt=$audioFormat"
-                    )
-                }
                 systemAudioCapture?.let { capture ->
                     val cap = audioBuffer.capacity()
-                    val bytes = ByteArray(cap)
+                    // Reuse a single pre-allocated buffer to avoid per-frame ByteArray allocation.
+                    val bytes = audioInjectionBuffer?.takeIf { it.size == cap }
+                        ?: ByteArray(cap).also { audioInjectionBuffer = it }
                     val hasSystemAudio = capture.fillAudioBuffer(bytes)
                     if (hasSystemAudio) {
                         audioBuffer.clear()
@@ -192,16 +187,6 @@ class WebRtcManager(
                             Log.w(TAG, "AudioRecordDataCallback: queue empty ($emptyInjectionCount), keeping mic")
                         }
                     }
-                }
-            }
-            .setSamplesReadyCallback { samples ->
-                samplesReadyFrameCount++
-                if (samplesReadyFrameCount % 500 == 0) {
-                    Log.d(
-                        TAG,
-                        "SamplesReadyCallback(diag): ${samplesReadyFrameCount} frames, ${samples.data.size} bytes, " +
-                            "ch=${samples.channelCount} rate=${samples.sampleRate} fmt=${samples.audioFormat}"
-                    )
                 }
             }
             .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
@@ -340,7 +325,6 @@ class WebRtcManager(
         // Reset audio injection debug counters
         injectionFrameCount = 0
         emptyInjectionCount = 0
-        samplesReadyFrameCount = 0
         audioDataCallbackCount = 0
 
         try {
@@ -696,7 +680,6 @@ class WebRtcManager(
             }
             Log.d(TAG, "Audio senders: ${audioSenders.size}")
             Log.d(TAG, "AudioRecordDataCallback count: $audioDataCallbackCount")
-            Log.d(TAG, "SamplesReadyCallback count: $samplesReadyFrameCount")
             Log.d(TAG, "Audio injection frames: $injectionFrameCount")
             Log.d(TAG, "Audio empty callbacks: $emptyInjectionCount")
             Log.d(TAG, "================================")
