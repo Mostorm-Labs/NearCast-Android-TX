@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -40,28 +41,43 @@ fun SessionScreen(
     isCasting: Boolean,
     isP2PReady: Boolean,
     isLogUploadInProgress: Boolean,
+    isUpdateDownloadInProgress: Boolean,
+    isDownloadProgressVisible: Boolean,
     onStartCast: () -> Unit,
     onStopCast: () -> Unit,
     onLeave: () -> Unit,
-    onUploadLogs: () -> Unit
+    onUploadLogs: () -> Unit,
+    onShowDownloadProgress: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            IconButton(
-                onClick = onUploadLogs,
-                enabled = !isLogUploadInProgress,
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(24.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.CloudUpload,
-                    contentDescription = "Upload Logs",
-                    modifier = Modifier.size(20.dp)
-                )
+                if (isUpdateDownloadInProgress && !isDownloadProgressVisible) {
+                    IconButton(onClick = onShowDownloadProgress) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Show update progress",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = onUploadLogs,
+                    enabled = !isLogUploadInProgress
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudUpload,
+                        contentDescription = "Upload Logs",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
 
             Column(

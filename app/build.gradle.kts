@@ -191,6 +191,15 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            // The online update APK is release-signed. When the local release
+            // keystore is available, sign debug builds with it as well so a
+            // debug build can be upgraded in place during OTA testing.
+            if (signingConfigs.getByName("release").storeFile?.exists() == true) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+
         getByName("release") {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

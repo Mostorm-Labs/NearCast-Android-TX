@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 
 /**
@@ -71,7 +72,7 @@ class ScreenCaptureService : Service() {
 
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("NearCast-Android-TX")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText("Your screen is being shared")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)

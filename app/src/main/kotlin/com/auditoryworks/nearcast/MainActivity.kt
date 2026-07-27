@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
 
     private var updateInfo by mutableStateOf<AppUpdateInfo?>(null)
     private var isDownloadingUpdate by mutableStateOf(false)
+    private var isDownloadProgressVisible by mutableStateOf(false)
     private var downloadProgress by mutableStateOf(0f)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -143,12 +144,15 @@ class MainActivity : ComponentActivity() {
                         pairCode = pairCode,
                         statusText = statusText,
                         isLogUploadInProgress = isLogUploadInProgress,
+                        isUpdateDownloadInProgress = isDownloadingUpdate,
+                        isDownloadProgressVisible = isDownloadProgressVisible,
                         onPairCodeChange = { pairCode = it },
                         onJoin = { joinRoom() },
                         onUploadLogs = {
                             SessionTraceRecorder.record(TAG, "Open log upload dialog from Home")
                             showLogUploadDialog = true
-                        }
+                        },
+                        onShowDownloadProgress = { isDownloadProgressVisible = true }
                     )
 
                     AppScreen.SESSION -> SessionScreen(
@@ -156,6 +160,8 @@ class MainActivity : ComponentActivity() {
                         isCasting = isCasting,
                         isP2PReady = isP2PReady,
                         isLogUploadInProgress = isLogUploadInProgress,
+                        isUpdateDownloadInProgress = isDownloadingUpdate,
+                        isDownloadProgressVisible = isDownloadProgressVisible,
                         onStartCast = {
                             requestNotificationPermissionAndStartCast(
                                 notificationPermissionLauncher,
@@ -173,7 +179,8 @@ class MainActivity : ComponentActivity() {
                         onUploadLogs = {
                             SessionTraceRecorder.record(TAG, "Open log upload dialog from Session")
                             showLogUploadDialog = true
-                        }
+                        },
+                        onShowDownloadProgress = { isDownloadProgressVisible = true }
                     )
                 }
 
@@ -202,6 +209,8 @@ class MainActivity : ComponentActivity() {
                         onUpdate = {
                             updateInfo = null
                             isDownloadingUpdate = true
+                            isDownloadProgressVisible = true
+                            downloadProgress = 0f
                             lifecycleScope.launch {
                                 try {
                                     UpdateManager.downloadAndInstall(this@MainActivity, info) { progress ->
@@ -211,14 +220,18 @@ class MainActivity : ComponentActivity() {
                                     statusText = "Update failed: ${e.message}"
                                 } finally {
                                     isDownloadingUpdate = false
+                                    isDownloadProgressVisible = false
                                 }
                             }
                         }
                     )
                 }
 
-                if (isDownloadingUpdate) {
-                    DownloadProgressDialog(progress = downloadProgress)
+                if (isDownloadingUpdate && isDownloadProgressVisible) {
+                    DownloadProgressDialog(
+                        progress = downloadProgress,
+                        onHide = { isDownloadProgressVisible = false }
+                    )
                 }
             }
         }
@@ -256,9 +269,9 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun DownloadProgressDialog(progress: Float) {
+    private fun DownloadProgressDialog(progress: Float, onHide: () -> Unit) {
         AlertDialog(
-            onDismissRequest = {},
+            onDismissRequest = onHide,
             title = { Text("Downloading Update...") },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -268,10 +281,16 @@ class MainActivity : ComponentActivity() {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("${(progress * 100).toInt()}%")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("The download continues in the background.")
                 }
             },
             confirmButton = {},
-            dismissButton = {}
+            dismissButton = {
+                TextButton(onClick = onHide) {
+                    Text("Hide")
+                }
+            }
         )
     }
 
