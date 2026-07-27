@@ -12,6 +12,18 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -23,6 +35,8 @@ import com.auditoryworks.nearcast.ui.screens.HomeScreen
 import com.auditoryworks.nearcast.ui.screens.LogUploadDialog
 import com.auditoryworks.nearcast.ui.screens.SessionScreen
 import com.auditoryworks.nearcast.ui.theme.ScreenCastTheme
+import com.auditoryworks.nearcast.updates.AppUpdateInfo
+import com.auditoryworks.nearcast.updates.UpdateManager
 import com.auditoryworks.nearcast.webrtc.NearHubEvent
 import com.auditoryworks.nearcast.webrtc.NearHubSignalingClient
 import com.auditoryworks.nearcast.webrtc.SignalingClient
@@ -52,6 +66,10 @@ class MainActivity : ComponentActivity() {
     private var showLogUploadDialog by mutableStateOf(false)
     private var isLogUploadInProgress by mutableStateOf(false)
 
+    private var updateInfo by mutableStateOf<AppUpdateInfo?>(null)
+    private var isDownloadingUpdate by mutableStateOf(false)
+    private var downloadProgress by mutableStateOf(0f)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SessionTraceRecorder.record(TAG, "Activity created")
@@ -64,6 +82,10 @@ class MainActivity : ComponentActivity() {
             isCasting = true
             isP2PReady = webRtcManager?.isDataChannelOpen == true
             statusText = "Casting"
+        }
+
+        lifecycleScope.launch {
+            updateInfo = UpdateManager.checkUpdate()
         }
 
         setContent {
@@ -172,8 +194,85 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 }
+
+                updateInfo?.let { info ->
+                    UpdateDialog(
+                        updateInfo = info,
+                        onDismiss = { updateInfo = null },
+                        onUpdate = {
+                            updateInfo = null
+                            isDownloadingUpdate = true
+                            lifecycleScope.launch {
+                                try {
+                                    UpdateManager.downloadAndInstall(this@MainActivity, info) { progress ->
+                                        downloadProgress = progress
+                                    }
+                                } catch (e: Exception) {
+                                    statusText = "Update failed: ${e.message}"
+                                } finally {
+                                    isDownloadingUpdate = false
+                                }
+                            }
+                        }
+                    )
+                }
+
+                if (isDownloadingUpdate) {
+                    DownloadProgressDialog(progress = downloadProgress)
+                }
             }
         }
+    }
+
+    @Composable
+    private fun UpdateDialog(
+        updateInfo: AppUpdateInfo,
+        onDismiss: () -> Unit,
+        onUpdate: () -> Unit
+    ) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("New Update Available: ${updateInfo.version}") },
+            text = {
+                Column {
+                    if (updateInfo.changelog?.isNotBlank() == true) {
+                        Text(updateInfo.changelog)
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                    Text("Would you like to download and install the new version?")
+                }
+            },
+            confirmButton = {
+                Button(onClick = onUpdate) {
+                    Text("Update Now")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text("Later")
+                }
+            }
+        )
+    }
+
+    @Composable
+    private fun DownloadProgressDialog(progress: Float) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Downloading Update...") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("${(progress * 100).toInt()}%")
+                }
+            },
+            confirmButton = {},
+            dismissButton = {}
+        )
     }
 
     private fun requestNotificationPermissionAndStartCast(

@@ -1,0 +1,107 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  MOSAPI_FOLDER_ID: "546"
+  MOSAPI_PRODUCT_ID: "626"
+  MOSAPI_PRODUCT_SLUG: nearcast-tx-android
+
+jobs:
+  build:
+    name: Build and Upload Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Get version from version.properties
+        id: get_version
+        run: |
+          VERSION_NAME=$(grep VERSION_NAME version.properties | cut -d'=' -f2)
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Decode Keystore
+        env:
+          ENCODED_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        if: env.ENCODED_KEYSTORE != ''
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > app/release.jks
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_FILE: release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease
+
+      - name: Generate Mosapi changelog
+        id: generate_changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          current_tag="${{ github.ref_name }}"
+          # If triggered by workflow_dispatch and no ref_name tag, use HEAD
+          if [[ -z "$current_tag" || ! "$current_tag" =~ ^v ]]; then
+            current_tag="HEAD"
+          fi
+          
+          # Find the previous tag for changelog generation
+          previous_tag=$(git describe --tags --abbrev=0 "${current_tag}^" 2>/dev/null || echo "")
+
+          changelog_path="mosapi-changelog.md"
+          if [[ -n "$previous_tag" ]]; then
+            echo "Generating changelog from $previous_tag..$current_tag"
+            git log --no-merges --pretty=format:'- %s (%h)' "$previous_tag..$current_tag" > "$changelog_path"
+          else
+            echo "No previous tag found; generating changelog for $current_tag"
+            git log --no-merges --pretty=format:'- %s (%h)' -n 20 "$current_tag" > "$changelog_path"
+          fi
+
+          if [[ ! -s "$changelog_path" ]]; then
+            echo "- Maintenance release." > "$changelog_path"
+          fi
+
+          echo "Mosapi changelog:"
+          cat "$changelog_path"
+          {
+            echo "changelog<<NEARCAST_CHANGELOG_EOF"
+            cat "$changelog_path"
+            echo "NEARCAST_CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload Android artifacts to Mosapi CMS
+        uses: Mostorm-Labs/mosapi-action@v1.0.0
+        with:
+          token: ${{ secrets.MOSAPI_TOKEN }}
+          folder-id: ${{ env.MOSAPI_FOLDER_ID }}
+          product-id: ${{ env.MOSAPI_PRODUCT_ID }}
+          version: ${{ env.VERSION_NAME }}
+          product-slug: ${{ env.MOSAPI_PRODUCT_SLUG }}
+          project-name: NearCast-Android-TX
+          changelog: ${{ steps.generate_changelog.outputs.changelog }}
+          wechat-webhook-key: ${{ secrets.WECOM_ROBOTS_KEY }}
+          artifacts: |
+            app/build/outputs/apk/release/*.apk

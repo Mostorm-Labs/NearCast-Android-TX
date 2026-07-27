@@ -1,6 +1,7 @@
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.FileOutputStream
+import java.util.Properties
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
@@ -148,8 +149,39 @@ android {
         applicationId = "com.auditoryworks.nearcast"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0-beta1"
+
+        val versionPropsFile = rootProject.file("version.properties")
+        val versionProps = Properties()
+        if (versionPropsFile.exists()) {
+            versionPropsFile.inputStream().use { versionProps.load(it) }
+        }
+        versionCode = versionProps.getProperty("VERSION_CODE", "1").toInt()
+        versionName = versionProps.getProperty("VERSION_NAME", "1.0.0")
+    }
+
+    signingConfigs {
+        create("release") {
+            // Read from environment variables for CI, fallback to local file if it exists
+            val keystorePath = System.getenv("KEYSTORE_FILE") ?: "release.jks"
+            val keystoreFile = file(keystorePath)
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Only use release signing if the keystore file exists
+            if (signingConfigs.getByName("release").storeFile?.exists() == true) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     buildFeatures {
