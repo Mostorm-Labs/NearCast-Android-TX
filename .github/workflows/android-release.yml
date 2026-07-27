@@ -36,15 +36,23 @@ jobs:
         id: get_version
         run: |
           VERSION_NAME=$(grep VERSION_NAME version.properties | cut -d'=' -f2)
+          TAG_NAME="${{ github.ref_name }}"
+          # Use tag name if it starts with 'v', otherwise use version.properties
+          if [[ "$TAG_NAME" =~ ^v[0-9] ]]; then
+            PUBLISH_VERSION="${TAG_NAME#v}"
+          else
+            PUBLISH_VERSION="$VERSION_NAME"
+          fi
           echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
-          echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_to_publish=$PUBLISH_VERSION" >> $GITHUB_OUTPUT
+          echo "Using version: $PUBLISH_VERSION"
 
       - name: Decode Keystore
         env:
           ENCODED_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         if: env.ENCODED_KEYSTORE != ''
         run: |
-          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > app/release.jks
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.jks
 
       - name: Build Release APK
         env:
@@ -100,7 +108,7 @@ jobs:
           token: ${{ secrets.MOSAPI_TOKEN }}
           folder-id: ${{ env.MOSAPI_FOLDER_ID }}
           product-id: ${{ env.MOSAPI_PRODUCT_ID }}
-          version: ${{ env.VERSION_NAME }}
+          version: ${{ steps.get_version.outputs.version_to_publish }}
           product-slug: ${{ env.MOSAPI_PRODUCT_SLUG }}
           project-name: NearCast-Android-TX
           changelog: ${{ steps.generate_changelog.outputs.changelog }}
