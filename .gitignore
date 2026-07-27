@@ -17,6 +17,8 @@ outputs/
 gradle-wrapper.jar
 !gradle/wrapper/gradle-wrapper.jar
 local.properties
+*.jks
+*.keystore
 
 # 系统文件
 .DS_Store

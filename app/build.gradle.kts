@@ -162,13 +162,13 @@ android {
     signingConfigs {
         create("release") {
             // Read from environment variables for CI, fallback to local file if it exists
-            val keystorePath = System.getenv("KEYSTORE_FILE") ?: "release.jks"
-            val keystoreFile = file(keystorePath)
+            val keystorePath = System.getenv("KEYSTORE_FILE") ?: "awx.jks"
+            val keystoreFile = rootProject.file(keystorePath)
             if (keystoreFile.exists()) {
                 storeFile = keystoreFile
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
+                keyAlias = System.getenv("KEY_ALIAS") ?: "awx"
+                keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
             }
         }
     }
