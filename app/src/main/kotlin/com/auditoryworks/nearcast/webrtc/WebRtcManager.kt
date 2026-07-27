@@ -82,8 +82,6 @@ class WebRtcManager(
     private var lastRemoteAnswerSdp: String? = null
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var mutedLocalPlaybackForCasting = false
-    private var previousMusicStreamVolume: Int? = null
-    private var shouldRestoreMusicVolumeAfterCasting = false
     private var videoStatsPollingJob: Job? = null
     private var videoStatsSnapshotCount = 0
 
@@ -847,51 +845,26 @@ class WebRtcManager(
     }
 
     /**
-     * Mute local media playback while casting so audio only comes from receiver side.
-     * We only restore if we changed volume ourselves.
+     * Do not change stream volume during casting.
+     * Playback capture already gives us the system audio PCM; touching media volume
+     * can cause device-specific loudness swings during debug.
      */
     private fun muteLocalPlaybackForCasting() {
         if (mutedLocalPlaybackForCasting) return
-        try {
-            val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-            previousMusicStreamVolume = before
-            shouldRestoreMusicVolumeAfterCasting = before > 0
-
-            // Force media stream volume to 0 to prevent local speaker output.
-            audioManager.setStreamVolume(
-                AudioManager.STREAM_MUSIC,
-                0,
-                AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
-            )
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // Keep mute hint for devices that honor stream mute state.
-                audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
-            }
-            val after = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-            mutedLocalPlaybackForCasting = true
-            Log.d(TAG, "Local playback mute request during casting: before=$before after=$after")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to mute local playback", e)
-        }
+        mutedLocalPlaybackForCasting = true
+        val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        Log.d(TAG, "Local playback mute skipped during casting: streamVolume=$current")
     }
 
     private fun restoreLocalPlaybackAfterCasting() {
         if (!mutedLocalPlaybackForCasting) return
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
-            }
-            if (shouldRestoreMusicVolumeAfterCasting) previousMusicStreamVolume?.let { prev ->
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, prev, 0)
-            }
-            val restored = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-            Log.d(TAG, "Local playback volume restore after casting: restored=$restored")
+            val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            Log.d(TAG, "Local playback restore skipped after casting: streamVolume=$current")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to restore local playback volume", e)
         } finally {
             mutedLocalPlaybackForCasting = false
-            previousMusicStreamVolume = null
-            shouldRestoreMusicVolumeAfterCasting = false
         }
     }
 

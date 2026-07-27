@@ -15,8 +15,11 @@ import android.content.pm.PackageManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
+import com.auditoryworks.nearcast.diagnostics.LogUploadManager
 import com.auditoryworks.nearcast.service.ScreenCaptureService
 import com.auditoryworks.nearcast.ui.screens.HomeScreen
+import com.auditoryworks.nearcast.ui.screens.LogUploadDialog
 import com.auditoryworks.nearcast.ui.screens.SessionScreen
 import com.auditoryworks.nearcast.ui.theme.ScreenCastTheme
 import com.auditoryworks.nearcast.webrtc.NearHubEvent
@@ -45,6 +48,8 @@ class MainActivity : ComponentActivity() {
     private var isCasting by mutableStateOf(false)
     private var isP2PReady by mutableStateOf(false)
     private var lastAudioModeStatus by mutableStateOf("")
+    private var showLogUploadDialog by mutableStateOf(false)
+    private var isLogUploadInProgress by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -104,14 +109,17 @@ class MainActivity : ComponentActivity() {
                     AppScreen.HOME -> HomeScreen(
                         pairCode = pairCode,
                         statusText = statusText,
+                        isLogUploadInProgress = isLogUploadInProgress,
                         onPairCodeChange = { pairCode = it },
-                        onJoin = { joinRoom() }
+                        onJoin = { joinRoom() },
+                        onUploadLogs = { showLogUploadDialog = true }
                     )
 
                     AppScreen.SESSION -> SessionScreen(
                         statusText = statusText,
                         isCasting = isCasting,
                         isP2PReady = isP2PReady,
+                        isLogUploadInProgress = isLogUploadInProgress,
                         onStartCast = {
                             requestNotificationPermissionAndStartCast(
                                 notificationPermissionLauncher,
@@ -124,7 +132,22 @@ class MainActivity : ComponentActivity() {
                             ScreenCaptureService.stop(this@MainActivity)
                             isCasting = false
                         },
-                        onLeave = { leaveRoom() }
+                        onLeave = { leaveRoom() },
+                        onUploadLogs = { showLogUploadDialog = true }
+                    )
+                }
+
+                if (showLogUploadDialog) {
+                    LogUploadDialog(
+                        isUploading = isLogUploadInProgress,
+                        onDismiss = {
+                            if (!isLogUploadInProgress) {
+                                showLogUploadDialog = false
+                            }
+                        },
+                        onUpload = { email, description ->
+                            uploadLogs(email, description)
+                        }
                     )
                 }
             }
@@ -175,6 +198,60 @@ class MainActivity : ComponentActivity() {
     ) {
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
+    }
+
+    private fun uploadLogs(email: String, description: String) {
+        if (isLogUploadInProgress) return
+
+        isLogUploadInProgress = true
+        statusText = "Uploading logs..."
+
+        lifecycleScope.launch {
+            try {
+                val result = LogUploadManager.upload(
+                    context = applicationContext,
+                    email = email,
+                    description = description
+                )
+                statusText = buildString {
+                    append("Logs uploaded")
+                    append("\nuploadId: ").append(result.uploadId)
+                    if (!result.feedbackId.isNullOrBlank()) {
+                        append("\nfeedbackId: ").append(result.feedbackId)
+                    }
+                    append("\nfiles: ").append(result.fileCount)
+                    append(", bytes: ").append(result.totalBytes)
+                }
+            } catch (e: Exception) {
+                statusText = "Log upload failed: ${e.readableMessage()}"
+            } finally {
+                isLogUploadInProgress = false
+                showLogUploadDialog = false
+            }
+        }
+    }
+
+    private fun Throwable.readableMessage(): String {
+        val messages = generateSequence(this) { it.cause }
+            .mapNotNull { throwable ->
+                throwable.message
+                    ?.replace(Regex("\\s+"), " ")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+            }
+            .toList()
+
+        val message = if (messages.isEmpty()) {
+            javaClass.simpleName
+        } else {
+            messages.joinToString(" -> ")
+        }
+
+        return if (message.length > 500) {
+            message.substring(0, 500) + "..."
+        } else {
+            message
+        }
     }
 
     private fun joinRoom() {

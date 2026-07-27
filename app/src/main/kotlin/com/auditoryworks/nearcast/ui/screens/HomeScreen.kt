@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -31,8 +34,10 @@ import com.auditoryworks.nearcast.R
 fun HomeScreen(
     pairCode: String,
     statusText: String,
+    isLogUploadInProgress: Boolean,
     onPairCodeChange: (String) -> Unit,
-    onJoin: () -> Unit
+    onJoin: () -> Unit,
+    onUploadLogs: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -101,6 +106,24 @@ fun HomeScreen(
                 )
                 Spacer(modifier = Modifier.size(8.dp))
                 Text("Join Room", style = MaterialTheme.typography.titleMedium)
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedButton(
+                onClick = onUploadLogs,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                enabled = !isLogUploadInProgress
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CloudUpload,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Upload Logs")
             }
 
             Spacer(modifier = Modifier.height(24.dp))

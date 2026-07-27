@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CastConnected
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -37,9 +38,11 @@ fun SessionScreen(
     statusText: String,
     isCasting: Boolean,
     isP2PReady: Boolean,
+    isLogUploadInProgress: Boolean,
     onStartCast: () -> Unit,
     onStopCast: () -> Unit,
-    onLeave: () -> Unit
+    onLeave: () -> Unit,
+    onUploadLogs: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -142,6 +145,26 @@ fun SessionScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Stop Casting", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedButton(
+                onClick = onUploadLogs,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                enabled = !isLogUploadInProgress
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.CloudUpload,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Upload Logs")
                 }
             }
 
