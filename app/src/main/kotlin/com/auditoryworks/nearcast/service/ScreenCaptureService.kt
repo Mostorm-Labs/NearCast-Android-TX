@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 /**
@@ -26,6 +27,12 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // The casting foreground service must survive removal of the launcher task.
+        Log.i(TAG, "Launcher task removed; keeping casting service alive")
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun createNotificationChannel() {
@@ -52,6 +59,7 @@ class ScreenCaptureService : Service() {
     }
 
     companion object {
+        private const val TAG = "ScreenCaptureService"
         private const val CHANNEL_ID = "screen_cast_channel"
         private const val NOTIFICATION_ID = 1001
 

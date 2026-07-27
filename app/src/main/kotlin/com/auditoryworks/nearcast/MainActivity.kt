@@ -28,6 +28,11 @@ import kotlinx.coroutines.launch
 
 enum class AppScreen { HOME, SESSION }
 
+/** Keeps the active WebRTC session alive while the UI task is removed or recreated. */
+private object ActiveCastingSession {
+    var manager: WebRtcManager? = null
+}
+
 private const val TAG = "MainActivity"
 
 class MainActivity : ComponentActivity() {
@@ -43,6 +48,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // A foreground service keeps the process alive after the task is swiped away. Restore the
+        // in-process manager when the launcher UI is opened again.
+        webRtcManager = ActiveCastingSession.manager
+        if (webRtcManager?.isCasting == true) {
+            currentScreen = AppScreen.SESSION
+            isCasting = true
+            isP2PReady = webRtcManager?.isDataChannelOpen == true
+            statusText = "Casting"
+        }
 
         setContent {
             ScreenCastTheme {
@@ -214,6 +229,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
+        ActiveCastingSession.manager = webRtcManager
 
         signalingClient.connect()
 
@@ -243,6 +259,7 @@ class MainActivity : ComponentActivity() {
     private fun leaveRoom() {
         webRtcManager?.stop()
         webRtcManager = null
+        ActiveCastingSession.manager = null
         ScreenCaptureService.stop(this)
         isCasting = false
         isP2PReady = false
@@ -252,9 +269,16 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        webRtcManager?.stop()
-        webRtcManager = null
-        ScreenCaptureService.stop(this)
+        if (isCasting || webRtcManager?.isCasting == true) {
+            // Do not tear down an active cast when Android removes/recreates the UI task. The
+            // foreground service and retained manager own the session until the user taps Stop.
+            android.util.Log.i(TAG, "Activity destroyed while casting; keeping session alive")
+        } else {
+            webRtcManager?.stop()
+            webRtcManager = null
+            ActiveCastingSession.manager = null
+            ScreenCaptureService.stop(this)
+        }
         super.onDestroy()
     }
 }
