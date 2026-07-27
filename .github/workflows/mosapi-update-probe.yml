@@ -47,6 +47,14 @@ jobs:
               name: 'array-minimal',
               products: [627],
             },
+            {
+              name: 'connect-no-files',
+              products: { disconnect: [], connect: [{ id: 627, position: { end: true } }] },
+            },
+            {
+              name: 'array-no-files',
+              products: [627],
+            },
           ];
 
           for (const variant of variants) {
@@ -58,7 +66,9 @@ jobs:
               state: 'alpha',
               type: 'optional',
               products: variant.products,
-              otaFiles: [{ type: '1', file: { id: fileId }, md5: fileMd5 }],
+              ...(variant.name.includes('no-files') ? {} : {
+                otaFiles: [{ type: '1', file: { id: fileId }, md5: fileMd5 }],
+              }),
               ...(variant.descriptions ? { descriptions: variant.descriptions } : {}),
               ...(variant.imgFiles ? { imgFiles: variant.imgFiles } : {}),
               ...(variant.extFiles ? { extFiles: variant.extFiles } : {}),
