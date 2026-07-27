@@ -143,6 +143,7 @@ class MainActivity : ComponentActivity() {
                     AppScreen.HOME -> HomeScreen(
                         pairCode = pairCode,
                         statusText = statusText,
+                        appVersionName = BuildConfig.VERSION_NAME,
                         isLogUploadInProgress = isLogUploadInProgress,
                         isUpdateDownloadInProgress = isDownloadingUpdate,
                         isDownloadProgressVisible = isDownloadProgressVisible,

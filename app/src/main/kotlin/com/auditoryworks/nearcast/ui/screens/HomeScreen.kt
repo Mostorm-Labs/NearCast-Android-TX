@@ -37,6 +37,7 @@ import com.auditoryworks.nearcast.R
 fun HomeScreen(
     pairCode: String,
     statusText: String,
+    appVersionName: String,
     isLogUploadInProgress: Boolean,
     isUpdateDownloadInProgress: Boolean,
     isDownloadProgressVisible: Boolean,
@@ -154,6 +155,15 @@ fun HomeScreen(
                     textAlign = TextAlign.Center
                 )
             }
+
+            Text(
+                text = "Version ${appVersionName.removePrefix("v")}",
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+            )
         }
     }
 }
