@@ -8,7 +8,7 @@ on:
 
 env:
   MOSAPI_FOLDER_ID: "546"
-  MOSAPI_PRODUCT_ID: "626"
+  MOSAPI_PRODUCT_ID: "627"
   MOSAPI_PRODUCT_SLUG: nearcast-tx-android
 
 jobs:
