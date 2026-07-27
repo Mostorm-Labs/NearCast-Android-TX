@@ -80,6 +80,18 @@ function getFileMd5(filePath) {
   return crypto.createHash('md5').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+function getUploadMimeType(filePath) {
+  return path.extname(filePath).toLowerCase() === '.apk'
+    ? 'application/vnd.android.package-archive'
+    : 'application/octet-stream';
+}
+
+function getOtaFileType(fileName) {
+  // Mosapi's Android update records use type "1" for an APK. Windows
+  // artifacts continue to use their filename as the OTA type.
+  return path.extname(fileName).toLowerCase() === '.apk' ? '1' : fileName;
+}
+
 function findFirstId(value) {
   if (value == null) return null;
   if (Array.isArray(value)) {
@@ -105,7 +117,7 @@ async function uploadFile(filePath, { token, folderId, adminBaseUrl, retries }) 
   const fileContent = fs.readFileSync(filePath);
   const formData = new FormData();
 
-  formData.append('files', new Blob([fileContent], { type: 'application/octet-stream' }), fileName);
+  formData.append('files', new Blob([fileContent], { type: getUploadMimeType(filePath) }), fileName);
   formData.append('fileInfo', JSON.stringify({ name: fileName, folder: String(folderId) }));
 
   let lastError;
@@ -225,7 +237,7 @@ async function createUpdateRecord({
       },
     ],
     otaFiles: uploadedFiles.map(file => ({
-      type: file.name,
+      type: getOtaFileType(file.name),
       file: {
         id: Number(file.id),
       },
