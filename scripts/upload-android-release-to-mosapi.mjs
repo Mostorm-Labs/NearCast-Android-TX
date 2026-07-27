@@ -212,20 +212,8 @@ async function createUpdateRecord({
     date,
     state,
     type,
-    // Keep the same relation payload used by the verified Mosapi release
-    // action. The API expects a Strapi relation operation here; sending a
-    // plain array of product IDs causes an opaque HTTP 500 on /updates.
-    products: {
-      disconnect: [],
-      connect: [
-        {
-          id: Number.parseInt(productId, 10),
-          position: {
-            end: true,
-          },
-        },
-      ],
-    },
+    // The current Mosapi UpdateRequest schema accepts product IDs directly.
+    products: [Number.parseInt(productId, 10)],
     descriptions: [
       {
         locale: 'en-us',
