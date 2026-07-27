@@ -168,17 +168,9 @@ async function createUpdateRecord({
     date,
     state,
     type,
-    products: {
-      disconnect: [],
-      connect: [
-        {
-          id: Number(productId),
-          position: {
-            end: true,
-          },
-        },
-      ],
-    },
+    // Mosapi's current UpdateRequest schema accepts product IDs directly.
+    // The older connect/position relation payload now causes HTTP 500.
+    products: [Number(productId)],
     descriptions: [
       {
         locale: 'en-us',

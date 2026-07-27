@@ -57,6 +57,29 @@ jobs:
         run: |
           echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.jks
 
+      - name: Verify release keystore certificate
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          EXPECTED_CERT_SHA256: "52:B6:8A:31:8B:21:6B:D9:36:A7:D7:AC:D9:D3:90:53:D8:12:26:02:8B:45:82:53:69:E2:D1:1F:9F:D2:26:78"
+        run: |
+          set -euo pipefail
+          if [[ ! -s release.jks ]]; then
+            echo "Decoded release keystore is missing or empty."
+            exit 1
+          fi
+          actual_cert_sha256=$(keytool -list -v \
+            -keystore release.jks \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" \
+            | awk -F': ' '/SHA256:/{print $2; exit}')
+          echo "Release certificate SHA-256: $actual_cert_sha256"
+          if [[ "$actual_cert_sha256" != "$EXPECTED_CERT_SHA256" ]]; then
+            echo "The CI keystore does not match the expected awx.jks certificate."
+            exit 1
+          fi
+          echo "CI keystore matches awx.jks."
+
       - name: Build Release APK
         env:
           KEYSTORE_FILE: release.jks
