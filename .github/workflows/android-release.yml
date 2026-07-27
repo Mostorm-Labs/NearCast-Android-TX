@@ -86,10 +86,12 @@ jobs:
 
           echo "Mosapi changelog:"
           cat "$changelog_path"
+          
+          # Use a more robust way to handle multi-line output in GitHub Actions
           {
-            echo "changelog<<NEARCAST_CHANGELOG_EOF"
+            echo "changelog<<EOF"
             cat "$changelog_path"
-            echo "NEARCAST_CHANGELOG_EOF"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload Android artifacts to Mosapi CMS
