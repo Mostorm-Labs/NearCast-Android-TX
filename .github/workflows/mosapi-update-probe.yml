@@ -55,6 +55,13 @@ jobs:
               name: 'array-no-files',
               products: [627],
             },
+            {
+              name: 'no-product-no-files',
+            },
+            {
+              name: 'known-windows-product-no-files',
+              products: { disconnect: [], connect: [{ id: 626, position: { end: true } }] },
+            },
           ];
 
           for (const variant of variants) {
@@ -65,7 +72,7 @@ jobs:
               date: new Date().toISOString(),
               state: 'alpha',
               type: 'optional',
-              products: variant.products,
+              ...(variant.products ? { products: variant.products } : {}),
               ...(variant.name.includes('no-files') ? {} : {
                 otaFiles: [{ type: '1', file: { id: fileId }, md5: fileMd5 }],
               }),
