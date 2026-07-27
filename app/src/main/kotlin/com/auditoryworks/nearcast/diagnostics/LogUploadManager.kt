@@ -13,7 +13,6 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.text.SimpleDateFormat
@@ -84,16 +83,21 @@ object LogUploadManager {
 
         ZipOutputStream(archiveFile.outputStream().buffered()).use { zip ->
             val manifest = buildManifest(context, logcat, workflowTrace)
+            val writer = java.io.OutputStreamWriter(zip, Charsets.UTF_8)
+
             zip.putNextEntry(ZipEntry("manifest.json"))
-            zip.write(manifest.toString(2).toByteArray(Charsets.UTF_8))
+            writer.write(manifest.toString(2))
+            writer.flush()
             zip.closeEntry()
 
             zip.putNextEntry(ZipEntry("001-app-logcat.txt"))
-            zip.write(logcat.text.toByteArray(Charsets.UTF_8))
+            writer.write(logcat.text)
+            writer.flush()
             zip.closeEntry()
 
             zip.putNextEntry(ZipEntry(TRACE_FILE_NAME))
-            zip.write(workflowTrace.toByteArray(Charsets.UTF_8))
+            writer.write(workflowTrace)
+            writer.flush()
             zip.closeEntry()
         }
 
@@ -108,8 +112,10 @@ object LogUploadManager {
         )
     }
 
+    private fun createdArchive(context: Context, file: File, info: LogArchiveInfo) = CreatedArchive(file, info)
+
     private fun readLogcat(packageName: String): LogcatCapture {
-        val filters = listOf(
+        val filterPatterns = listOf(
             packageName,
             "com.auditoryworks.nearcast",
             "WebRtcManager",
@@ -122,6 +128,9 @@ object LogUploadManager {
             "AndroidRuntime",
             "System.err"
         )
+        // Pre-compile regex for faster matching across 20k lines
+        val filterRegex = filterPatterns.joinToString("|") { Regex.escape(it) }.toRegex(RegexOption.IGNORE_CASE)
+        
         val builder = StringBuilder()
         var capturedBytes = 0L
         var truncated = false
@@ -131,16 +140,18 @@ object LogUploadManager {
             val process = ProcessBuilder("logcat", "-d", "-v", "time", "-t", LOGCAT_LINE_LIMIT)
                 .redirectErrorStream(true)
                 .start()
-            BufferedReader(InputStreamReader(process.inputStream)).useLines { lines ->
+            
+            process.inputStream.bufferedReader().useLines { lines ->
                 for (line in lines) {
-                    if (!filters.any { line.contains(it, ignoreCase = true) }) continue
-                    val bytesNeeded = line.toByteArray(Charsets.UTF_8).size + 1
-                    if (capturedBytes + bytesNeeded > MAX_BYTES) {
+                    if (!filterRegex.containsMatchIn(line)) continue
+                    
+                    val lineBytes = line.length * 2L // Rough estimate for UTF-8/UTF-16
+                    if (capturedBytes + lineBytes > MAX_BYTES) {
                         truncated = true
                         break
                     }
                     builder.append(line).append('\n')
-                    capturedBytes += bytesNeeded
+                    capturedBytes += lineBytes
                 }
             }
             val finished = process.waitFor(5, TimeUnit.SECONDS)

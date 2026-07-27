@@ -74,20 +74,25 @@ class MainActivity : ComponentActivity() {
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                         val data = result.data!!
                         statusText = "Starting screen capture..."
-                        // Delay to ensure foreground service is fully started
-                        // (required on Android 10+ for MediaProjection)
+                        // 1. Start foreground service immediately after permission granted.
+                        // On Android 14+, the foreground service MUST be started before MediaProjection
+                        // is created from the result data.
+                        SessionTraceRecorder.record(TAG, "Starting screen capture service")
+                        ScreenCaptureService.start(this@MainActivity)
+
+                        // 2. Short delay to ensure the system has processed the foreground service start
+                        // and it is in "foreground" state before we attempt to use the MediaProjection.
                         window.decorView.postDelayed({
                             try {
-                                SessionTraceRecorder.record(TAG, "Starting screen capture service")
-                                ScreenCaptureService.start(this@MainActivity)
                                 SessionTraceRecorder.record(TAG, "Starting WebRTC screen capture")
                                 webRtcManager?.startScreenCapture(data)
                                 isCasting = true
                                 SessionTraceRecorder.record(TAG, "Screen capture started")
                             } catch (e: Exception) {
-                                statusText = "Screen capture failed: ${e.message}"
+                                val readableError = e.readableMessage()
+                                statusText = "Screen capture failed: $readableError"
                                 ScreenCaptureService.stop(this@MainActivity)
-                                SessionTraceRecorder.record(TAG, "Screen capture failed: ${e.message}")
+                                SessionTraceRecorder.record(TAG, "Screen capture failed: $readableError")
                             }
                         }, 800)
                     } else {

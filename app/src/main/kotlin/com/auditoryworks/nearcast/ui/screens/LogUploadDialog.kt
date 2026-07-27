@@ -2,10 +2,13 @@ package com.auditoryworks.nearcast.ui.screens
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,7 +48,8 @@ fun LogUploadDialog(
                     label = { Text("Email") },
                     singleLine = true,
                     enabled = !isUploading,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth()
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -55,12 +59,22 @@ fun LogUploadDialog(
                     onValueChange = { description = it },
                     label = { Text("Description") },
                     minLines = 3,
-                    enabled = !isUploading
+                    enabled = !isUploading,
+                    modifier = Modifier.fillMaxWidth()
                 )
 
                 if (isUploading) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("Uploading logs...")
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Compressing and uploading logs...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                 }
             }
         },
