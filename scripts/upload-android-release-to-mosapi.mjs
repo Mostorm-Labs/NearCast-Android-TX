@@ -217,9 +217,9 @@ async function createUpdateRecord({
   const date = new Date().toISOString();
   const payload = {
     // `productSlug` remains the fixed product identifier used by the app's
-    // update query. Mosapi update records require a unique slug, matching the
-    // format used by the verified Windows release action.
-    slug: `${productSlug}-${version}__${date}`,
+    // update query. Existing Mosapi Android records use a versioned slug
+    // without a timestamp suffix.
+    slug: `${productSlug}-${version}`,
     version,
     date,
     state,
@@ -359,7 +359,9 @@ async function main() {
   const productSlug = requiredEnv('MOSAPI_PRODUCT_SLUG');
   const productPlatform = optionalEnv('MOSAPI_PRODUCT_PLATFORM');
   const versionValue = requiredEnv('MOSAPI_VERSION');
-  const version = versionValue.toLowerCase().startsWith('v') ? versionValue : `v${versionValue}`;
+  // Android Mosapi records use semantic versions without the Windows-style
+  // leading "v" (for example, "0.2.1").
+  const version = versionValue.replace(/^v/i, '');
   const adminBaseUrl = optionalEnv('MOSAPI_ADMIN_BASE_URL', DEFAULT_ADMIN_BASE_URL).replace(/\/$/, '');
   const state = deriveState(version);
   const type = optionalEnv('MOSAPI_UPDATE_TYPE', 'optional');
