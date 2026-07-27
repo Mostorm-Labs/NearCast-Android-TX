@@ -87,12 +87,11 @@ jobs:
           echo "Mosapi changelog:"
           cat "$changelog_path"
           
-          # Use a randomly generated delimiter to avoid collisions with content
-          EOF_MAYBE="EOF_$(date +%s)_$RANDOM"
+          # Ensure the changelog ends with a newline and use a clean EOF
           {
-            echo "changelog<<$EOF_MAYBE"
-            cat "$changelog_path"
-            echo "$EOF_MAYBE"
+            echo "changelog<<EOF"
+            sed -e '$a\' "$changelog_path"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload Android artifacts to Mosapi CMS
