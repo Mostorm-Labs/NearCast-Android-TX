@@ -18,6 +18,13 @@ jobs:
           const fileMd5 = '19af620fbda9476002871731c6ec5d90';
           const runId = process.env.GITHUB_RUN_ID;
 
+          for (const authorization of [token, `Bearer ${token}`]) {
+            const me = await fetch('https://mosapi-admin.auditoryworks.co/v1/users/me', {
+              headers: { Authorization: authorization },
+            });
+            console.log(`users/me with ${authorization.startsWith('Bearer ') ? 'Bearer' : 'raw'} token: HTTP ${me.status} ${(await me.text()).slice(0, 300)}`);
+          }
+
           const variants = [
             {
               name: 'connect-full',
