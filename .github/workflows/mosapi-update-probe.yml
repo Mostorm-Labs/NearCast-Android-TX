@@ -62,6 +62,19 @@ jobs:
               name: 'known-windows-product-no-files',
               products: { disconnect: [], connect: [{ id: 626, position: { end: true } }] },
             },
+            {
+              name: 'known-windows-product-full',
+              products: { disconnect: [], connect: [{ id: 626, position: { end: true } }] },
+              fileId: 18074,
+              fileMd5: '9ef8d8978f09f66103498610e96a687d',
+              fileType: 'NearCast-0.1.78-windows-x64.msi',
+              descriptions: [
+                { locale: 'en-us', content: 'probe' },
+                { locale: 'zh-cn', content: 'probe' },
+              ],
+              imgFiles: [],
+              extFiles: [],
+            },
           ];
 
           for (const variant of variants) {
@@ -74,7 +87,7 @@ jobs:
               type: 'optional',
               ...(variant.products ? { products: variant.products } : {}),
               ...(variant.name.includes('no-files') ? {} : {
-                otaFiles: [{ type: '1', file: { id: fileId }, md5: fileMd5 }],
+                otaFiles: [{ type: variant.fileType ?? '1', file: { id: variant.fileId ?? fileId }, md5: variant.fileMd5 ?? fileMd5 }],
               }),
               ...(variant.descriptions ? { descriptions: variant.descriptions } : {}),
               ...(variant.imgFiles ? { imgFiles: variant.imgFiles } : {}),
