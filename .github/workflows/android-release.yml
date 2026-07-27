@@ -147,6 +147,7 @@ jobs:
           MOSAPI_FOLDER_ID: ${{ env.MOSAPI_FOLDER_ID }}
           MOSAPI_PRODUCT_ID: ${{ env.MOSAPI_PRODUCT_ID }}
           MOSAPI_PRODUCT_SLUG: ${{ env.MOSAPI_PRODUCT_SLUG }}
+          MOSAPI_PRODUCT_PLATFORM: Android
           MOSAPI_VERSION: ${{ steps.get_version.outputs.version_name }}
           MOSAPI_CHANGELOG: ${{ steps.generate_changelog.outputs.changelog }}
           MOSAPI_PROJECT_NAME: NearCast-Android-TX

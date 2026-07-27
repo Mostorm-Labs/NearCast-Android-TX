@@ -150,6 +150,47 @@ async function uploadFile(filePath, { token, folderId, adminBaseUrl, retries }) 
   throw lastError;
 }
 
+async function ensureProductPlatform({ token, adminBaseUrl, productId, expectedPlatform }) {
+  if (!expectedPlatform) return;
+
+  const endpoint = `${adminBaseUrl}/products/${productId}`;
+  const getResponse = await fetch(endpoint, {
+    headers: { Authorization: token },
+  });
+  const getBody = await responseText(getResponse);
+  if (!getResponse.ok) {
+    throw new Error(`Failed to inspect Mosapi product ${productId}. Status: ${getResponse.status}. Response: ${getBody.slice(0, 1000)}`);
+  }
+
+  const product = parseJson(getBody, 'Fetch product');
+  const currentPlatform = product?.data?.attributes?.platform ?? product?.data?.platform ?? '';
+  if (currentPlatform === expectedPlatform) {
+    console.log(`Mosapi product ${productId} platform is already ${expectedPlatform}.`);
+    return;
+  }
+
+  console.log(`Correcting Mosapi product ${productId} platform: ${currentPlatform || '<empty>'} -> ${expectedPlatform}.`);
+  const updateResponse = await fetch(endpoint, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: token,
+    },
+    body: JSON.stringify({ data: { platform: expectedPlatform } }),
+  });
+  const updateBody = await responseText(updateResponse);
+  if (!updateResponse.ok) {
+    throw new Error(`Failed to correct Mosapi product ${productId} platform. Status: ${updateResponse.status}. Response: ${updateBody.slice(0, 1000)}`);
+  }
+
+  const updated = parseJson(updateBody, 'Update product');
+  const updatedPlatform = updated?.data?.attributes?.platform ?? updated?.data?.platform ?? '';
+  if (updatedPlatform !== expectedPlatform) {
+    throw new Error(`Mosapi product ${productId} platform remained ${updatedPlatform || '<empty>'} after update.`);
+  }
+  console.log(`Mosapi product ${productId} platform corrected to ${expectedPlatform}.`);
+}
+
 async function createUpdateRecord({
   token,
   adminBaseUrl,
@@ -302,6 +343,7 @@ async function main() {
   const folderId = requiredEnv('MOSAPI_FOLDER_ID');
   const productId = requiredEnv('MOSAPI_PRODUCT_ID');
   const productSlug = requiredEnv('MOSAPI_PRODUCT_SLUG');
+  const productPlatform = optionalEnv('MOSAPI_PRODUCT_PLATFORM');
   const versionValue = requiredEnv('MOSAPI_VERSION');
   const version = versionValue.toLowerCase().startsWith('v') ? versionValue : `v${versionValue}`;
   const adminBaseUrl = optionalEnv('MOSAPI_ADMIN_BASE_URL', DEFAULT_ADMIN_BASE_URL).replace(/\/$/, '');
@@ -313,6 +355,13 @@ async function main() {
   console.log(`Publishing NearCast-Android-TX ${version} to Mosapi.`);
   console.log(`Product: ${productSlug} (${productId}), state=${state}, type=${type}`);
   console.log(`Artifacts: ${files.map(file => path.basename(file)).join(', ')}`);
+
+  await ensureProductPlatform({
+    token,
+    adminBaseUrl,
+    productId,
+    expectedPlatform: productPlatform,
+  });
 
   const uploadedFiles = [];
   for (const file of files) {
