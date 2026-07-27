@@ -2,8 +2,6 @@ package com.auditoryworks.nearcast.updates
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.auditoryworks.nearcast.BuildConfig
@@ -11,8 +9,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 data class AppUpdateInfo(
@@ -25,6 +25,8 @@ object UpdateManager {
     private const val TAG = "UpdateManager"
     private const val PRODUCT_SLUG = "nearcast-tx-android"
     private const val API_BASE_URL = "https://mosapi.auditoryworks.co/v1"
+    private const val UPDATE_QUERY =
+        "sort=version:desc&limit=1&populate=otaFiles.file,descriptions"
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -33,7 +35,7 @@ object UpdateManager {
 
     suspend fun checkUpdate(): AppUpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val url = "$API_BASE_URL/updates/product/$PRODUCT_SLUG?sort=version:desc&limit=1&populate=otaFiles.file"
+            val url = "$API_BASE_URL/updates/product/$PRODUCT_SLUG?$UPDATE_QUERY"
             val request = Request.Builder().url(url).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
@@ -41,25 +43,25 @@ object UpdateManager {
                 val json = JSONObject(body)
                 val data = json.optJSONArray("data") ?: return@withContext null
                 if (data.length() == 0) return@withContext null
-                
-                val latest = data.getJSONObject(0)
-                val remoteVersion = latest.getString("version").removePrefix("v")
+
+                // Strapi returns update fields under `attributes`; older Mosapi
+                // deployments returned them at the top level. Accept both forms.
+                val latestEnvelope = data.getJSONObject(0)
+                val latest = latestEnvelope.optJSONObject("attributes") ?: latestEnvelope
+                val remoteVersion = latest.optString("version")
+                    .removePrefix("v")
+                    .takeIf { it.isNotBlank() }
+                    ?: return@withContext null
                 val currentVersion = BuildConfig.VERSION_NAME.removePrefix("v")
-                
+
                 if (isNewerVersion(remoteVersion, currentVersion)) {
-                    val otaFiles = latest.optJSONArray("otaFiles")
-                    if (otaFiles != null && otaFiles.length() > 0) {
-                        val fileObj = otaFiles.getJSONObject(0).optJSONObject("file")
-                        val downloadUrl = fileObj?.optString("url")
-                        if (!downloadUrl.isNullOrBlank()) {
-                            // Mosapi might return relative URLs
-                            val fullUrl = if (downloadUrl.startsWith("http")) downloadUrl else "https://mosapi.auditoryworks.co$downloadUrl"
-                            return@withContext AppUpdateInfo(
-                                version = remoteVersion,
-                                downloadUrl = fullUrl,
-                                changelog = latest.optString("description", "")
-                            )
-                        }
+                    val downloadUrl = extractDownloadUrl(latest.optJSONArray("otaFiles"))
+                    if (!downloadUrl.isNullOrBlank()) {
+                        return@withContext AppUpdateInfo(
+                            version = remoteVersion,
+                            downloadUrl = downloadUrl,
+                            changelog = extractChangelog(latest)
+                        )
                     }
                 }
             }
@@ -70,21 +72,140 @@ object UpdateManager {
     }
 
     private fun isNewerVersion(remote: String, current: String): Boolean {
-        val remoteParts = remote.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
-        val currentParts = current.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
-        
-        for (i in 0 until maxOf(remoteParts.size, currentParts.size)) {
-            val r = remoteParts.getOrNull(i) ?: 0
-            val c = currentParts.getOrNull(i) ?: 0
-            if (r > c) return true
-            if (r < c) return false
+        return compareVersions(remote, current) > 0
+    }
+
+    /** Compare semantic versions, including alpha/beta suffixes. */
+    private fun compareVersions(left: String, right: String): Int {
+        val leftParts = parseVersion(left)
+        val rightParts = parseVersion(right)
+
+        for (index in 0 until maxOf(leftParts.first.size, rightParts.first.size)) {
+            val l = leftParts.first.getOrNull(index) ?: 0
+            val r = rightParts.first.getOrNull(index) ?: 0
+            if (l != r) return l.compareTo(r)
         }
-        
-        // If versions are same, check suffixes (beta/alpha) - simplified logic
-        return remote.contains("beta") && !current.contains("beta") && current.contains("alpha") 
-                || (remote != current && remote.length > current.length && remote.startsWith(current)) 
-                // Fallback to string comparison if simple numeric fails
-                || remote > current
+
+        val leftPre = leftParts.second
+        val rightPre = rightParts.second
+        if (leftPre.isEmpty() && rightPre.isEmpty()) return 0
+        if (leftPre.isEmpty()) return 1
+        if (rightPre.isEmpty()) return -1
+
+        for (index in 0 until maxOf(leftPre.size, rightPre.size)) {
+            val l = leftPre.getOrNull(index) ?: return -1
+            val r = rightPre.getOrNull(index) ?: return 1
+            val result = comparePreReleaseToken(l, r)
+            if (result != 0) return result
+        }
+        return 0
+    }
+
+    private fun comparePreReleaseToken(left: String, right: String): Int {
+        val leftMatch = Regex("^([A-Za-z]+)(\\d*)$").matchEntire(left)
+        val rightMatch = Regex("^([A-Za-z]+)(\\d*)$").matchEntire(right)
+        if (leftMatch != null && rightMatch != null) {
+            val nameResult = leftMatch.groupValues[1].lowercase(Locale.US)
+                .compareTo(rightMatch.groupValues[1].lowercase(Locale.US))
+            if (nameResult != 0) return nameResult
+
+            val leftNumber = leftMatch.groupValues[2].toIntOrNull()
+            val rightNumber = rightMatch.groupValues[2].toIntOrNull()
+            if (leftNumber != null && rightNumber != null) {
+                return leftNumber.compareTo(rightNumber)
+            }
+            if (leftNumber != null) return 1
+            if (rightNumber != null) return -1
+            return 0
+        }
+
+        val leftNumber = left.toIntOrNull()
+        val rightNumber = right.toIntOrNull()
+        return when {
+            leftNumber != null && rightNumber != null -> leftNumber.compareTo(rightNumber)
+            leftNumber != null -> -1
+            rightNumber != null -> 1
+            else -> left.lowercase(Locale.US).compareTo(right.lowercase(Locale.US))
+        }
+    }
+
+    private fun parseVersion(value: String): Pair<List<Int>, List<String>> {
+        val normalized = value.trim().removePrefix("v")
+        val sections = normalized.split('-', limit = 2)
+        val numbers = sections[0].split('.').map { token ->
+            token.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+        }
+        val preRelease = sections.getOrNull(1)
+            ?.split('.', '-')
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
+        return numbers to preRelease
+    }
+
+    private fun extractDownloadUrl(otaFiles: JSONArray?): String? {
+        if (otaFiles == null || otaFiles.length() == 0) return null
+
+        for (index in 0 until otaFiles.length()) {
+            val fileObj = otaFiles.getJSONObject(index).optJSONObject("file") ?: continue
+
+            val directUrl = fileObj.optString("url").takeIf { it.isNotBlank() }
+            if (directUrl != null) {
+                return resolveAbsoluteUrl(directUrl)
+            }
+
+            val nestedUrl = fileObj.optJSONObject("data")
+                ?.optJSONObject("attributes")
+                ?.optString("url")
+                ?.takeIf { it.isNotBlank() }
+            if (nestedUrl != null) {
+                return resolveAbsoluteUrl(nestedUrl)
+            }
+
+            val attrsUrl = fileObj.optJSONObject("attributes")
+                ?.optString("url")
+                ?.takeIf { it.isNotBlank() }
+            if (attrsUrl != null) {
+                return resolveAbsoluteUrl(attrsUrl)
+            }
+        }
+
+        return null
+    }
+
+    private fun extractChangelog(latest: JSONObject): String? {
+        val descriptions = latest.optJSONArray("descriptions")
+        if (descriptions != null) {
+            val enUs = findDescriptionContent(descriptions, "en-us")
+            if (!enUs.isNullOrBlank()) return enUs
+
+            val any = findDescriptionContent(descriptions, null)
+            if (!any.isNullOrBlank()) return any
+        }
+
+        val description = latest.optString("description").takeIf { it.isNotBlank() }
+        if (description != null) return description
+
+        return null
+    }
+
+    private fun findDescriptionContent(descriptions: JSONArray, locale: String?): String? {
+        for (index in 0 until descriptions.length()) {
+            val item = descriptions.optJSONObject(index) ?: continue
+            if (locale != null && !locale.equals(item.optString("locale"), ignoreCase = true)) {
+                continue
+            }
+            val content = item.optString("content").takeIf { it.isNotBlank() }
+            if (content != null) return content
+        }
+        return null
+    }
+
+    private fun resolveAbsoluteUrl(url: String): String {
+        return if (url.startsWith("http://") || url.startsWith("https://")) {
+            url
+        } else {
+            "https://mosapi.auditoryworks.co$url"
+        }
     }
 
     suspend fun downloadAndInstall(context: Context, updateInfo: AppUpdateInfo, onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {

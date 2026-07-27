@@ -71,7 +71,7 @@ class ScreenCaptureService : Service() {
 
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("ScreenCast")
+            .setContentTitle("NearCast-Android-TX")
             .setContentText("Your screen is being shared")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)

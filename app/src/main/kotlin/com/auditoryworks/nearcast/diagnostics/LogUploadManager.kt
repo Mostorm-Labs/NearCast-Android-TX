@@ -40,7 +40,7 @@ object LogUploadManager {
     private const val API_BASE_URL = "https://mosapi.auditoryworks.co/v1"
     private const val MAX_BYTES = 50L * 1024L * 1024L
     private const val LOGCAT_LINE_LIMIT = "20000"
-    private const val DEFAULT_DESCRIPTION = "NearHub Cast logs"
+    private const val DEFAULT_DESCRIPTION = "NearCast logs"
     private const val DEFAULT_EMAIL = "example@mail.com"
     private const val TRACE_FILE_NAME = "002-webrtc-flow.txt"
 
@@ -166,7 +166,7 @@ object LogUploadManager {
         }
 
         if (builder.isEmpty()) {
-            builder.append("No matching NearHub Cast logcat entries were captured.\n")
+            builder.append("No matching NearCast logcat entries were captured.\n")
         }
         error?.let {
             builder.append("\nlogcat capture warning: ").append(it).append('\n')
@@ -252,7 +252,7 @@ object LogUploadManager {
     ): String? {
         val payload = JSONObject().apply {
             put("data", JSONObject().apply {
-                put("appVersion", "NearHub Cast ${BuildConfig.VERSION_NAME}")
+                put("appVersion", "NearCast-Android-TX ${BuildConfig.VERSION_NAME}")
                 put("client", JSONObject().apply {
                     put("name", "Unknown")
                     put("email", email.ifBlank { DEFAULT_EMAIL })
@@ -261,7 +261,7 @@ object LogUploadManager {
                 })
                 put("equipment", buildEquipment())
                 put("content", JSONObject().apply {
-                    put("title", "NearHub Cast logs: ${description.normalizedTitle()}")
+                    put("title", "NearCast-Android-TX logs: ${description.normalizedTitle()}")
                     put("message", description)
                     put("attachments", JSONArray().apply {
                         put(JSONObject().put("id", attachmentId))

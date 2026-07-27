@@ -1,11 +1,11 @@
-# ScreenCast Demo — NearHub WebCast Android Client
+# NearCast-Android-TX — NearHub WebCast Android Client
 
 基于 WebRTC 的 Android 屏幕投射客户端，对接 NearHub WebCast 协议。
 
 ## 项目结构
 
 ```
-ScreenCastDemo/
+NearCast-Android-TX/
 ├── app/                              # Android 客户端
 │   └── src/main/kotlin/.../
 │       ├── MainActivity.kt           # 入口：流程控制、权限、页面导航
@@ -70,7 +70,7 @@ ScreenCastDemo/
 
 ### 运行步骤
 
-1. 用 Android Studio 打开 `ScreenCastDemo` 目录
+1. 用 Android Studio 打开 `NearCast-Android-TX` 目录
 2. 等待 Gradle 同步完成
 3. 连接 Android 手机，运行 App
 4. 在 NearHub 接收端上查看投屏码（pairCode）

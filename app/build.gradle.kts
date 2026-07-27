@@ -1,3 +1,4 @@
+import com.android.build.api.variant.impl.VariantOutputImpl
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.FileOutputStream
@@ -32,6 +33,19 @@ dependencies {
 val patchedStreamWebrtcAar =
     layout.buildDirectory.file("patched-deps/stream-webrtc-android-$streamWebrtcVersion-patched.aar")
 val localMavenRepoDir = rootProject.layout.buildDirectory.dir("local-maven")
+val versionPropsFile = rootProject.file("version.properties")
+val versionProps = Properties().apply {
+    if (versionPropsFile.exists()) {
+        versionPropsFile.inputStream().use { load(it) }
+    }
+}
+val appVersionName = providers.gradleProperty("versionNameOverride").orNull
+    ?: versionProps.getProperty("VERSION_NAME", "1.0.0")
+val appVersionCode = providers.gradleProperty("versionCodeOverride").orNull?.toIntOrNull()
+    ?: versionProps.getProperty("VERSION_CODE", "1").toInt()
+
+fun sanitizeApkFileNamePart(value: String): String =
+    value.replace(Regex("[^A-Za-z0-9._-]"), "-")
 
 val patchStreamWebrtcAar = tasks.register("patchStreamWebrtcAar") {
     group = "build"
@@ -149,22 +163,22 @@ android {
         applicationId = "com.auditoryworks.nearcast"
         minSdk = 24
         targetSdk = 35
-
-        val versionPropsFile = rootProject.file("version.properties")
-        val versionProps = Properties()
-        if (versionPropsFile.exists()) {
-            versionPropsFile.inputStream().use { versionProps.load(it) }
-        }
-        versionCode = versionProps.getProperty("VERSION_CODE", "1").toInt()
-        versionName = versionProps.getProperty("VERSION_NAME", "1.0.0")
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     signingConfigs {
         create("release") {
-            // Read from environment variables for CI, fallback to local file if it exists
-            val keystorePath = System.getenv("KEYSTORE_FILE") ?: "awx.jks"
-            val keystoreFile = rootProject.file(keystorePath)
-            if (keystoreFile.exists()) {
+            // Prefer CI-injected keystore, but always fall back to the repo-local one.
+            val keystoreCandidates = listOfNotNull(
+                System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() },
+                "release.jks",
+                "awx.jks"
+            )
+            val keystoreFile = keystoreCandidates
+                .map { rootProject.file(it) }
+                .firstOrNull { it.exists() }
+            if (keystoreFile != null) {
                 storeFile = keystoreFile
                 storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
                 keyAlias = System.getenv("KEY_ALIAS") ?: "awx"
@@ -205,6 +219,20 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            val versionPart = sanitizeApkFileNamePart(appVersionName)
+            val fileName = if (variant.name == "release") {
+                "NearCast-Android-TX-v$versionPart.apk"
+            } else {
+                "NearCast-Android-TX-v$versionPart-${variant.name}.apk"
+            }
+            (output as VariantOutputImpl).outputFileName.set(fileName)
         }
     }
 }

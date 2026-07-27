@@ -21,7 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
-private const val DEFAULT_LOG_DESCRIPTION = "NearHub Cast logs"
+private const val DEFAULT_LOG_DESCRIPTION = "NearCast logs"
 private const val DEFAULT_LOG_EMAIL = "example@mail.com"
 
 @Composable

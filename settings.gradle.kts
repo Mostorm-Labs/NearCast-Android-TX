@@ -29,5 +29,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ScreenCastDemo"
+rootProject.name = "NearCast-Android-TX"
 include(":app")
