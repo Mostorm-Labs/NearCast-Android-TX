@@ -224,8 +224,18 @@ async function createUpdateRecord({
     date,
     state,
     type,
-    // The current Mosapi UpdateRequest schema accepts product IDs directly.
-    products: [Number.parseInt(productId, 10)],
+    // Match the relation payload used by the verified Windows Mosapi Action.
+    products: {
+      disconnect: [],
+      connect: [
+        {
+          id: Number.parseInt(productId, 10),
+          position: {
+            end: true,
+          },
+        },
+      ],
+    },
     descriptions: [
       {
         locale: 'en-us',
