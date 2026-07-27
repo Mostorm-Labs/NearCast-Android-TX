@@ -26,7 +26,10 @@ object UpdateManager {
     private const val PRODUCT_SLUG = "nearcast-tx-android"
     private const val API_BASE_URL = "https://mosapi.auditoryworks.co/v1"
     private const val UPDATE_QUERY =
-        "sort=version:desc&limit=1&populate=otaFiles.file,descriptions"
+        // Mosapi sorts the version field lexicographically, so asking for the
+        // first version can incorrectly return 1.0.9 before 1.0.10. Fetch a
+        // batch and select the highest semantic version locally instead.
+        "sort=createdAt:desc&limit=50&populate=otaFiles.file,descriptions"
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -44,26 +47,37 @@ object UpdateManager {
                 val data = json.optJSONArray("data") ?: return@withContext null
                 if (data.length() == 0) return@withContext null
 
-                // Strapi returns update fields under `attributes`; older Mosapi
-                // deployments returned them at the top level. Accept both forms.
-                val latestEnvelope = data.getJSONObject(0)
-                val latest = latestEnvelope.optJSONObject("attributes") ?: latestEnvelope
-                val remoteVersion = latest.optString("version")
-                    .removePrefix("v")
-                    .takeIf { it.isNotBlank() }
-                    ?: return@withContext null
                 val currentVersion = BuildConfig.VERSION_NAME.removePrefix("v")
+                var bestUpdate: AppUpdateInfo? = null
 
-                if (isNewerVersion(remoteVersion, currentVersion)) {
-                    val downloadUrl = extractDownloadUrl(latest.optJSONArray("otaFiles"))
-                    if (!downloadUrl.isNullOrBlank()) {
-                        return@withContext AppUpdateInfo(
-                            version = remoteVersion,
-                            downloadUrl = downloadUrl,
-                            changelog = extractChangelog(latest)
-                        )
+                for (index in 0 until data.length()) {
+                    // Strapi returns update fields under `attributes`; older
+                    // Mosapi deployments returned them at the top level.
+                    val updateEnvelope = data.getJSONObject(index)
+                    val update = updateEnvelope.optJSONObject("attributes") ?: updateEnvelope
+                    val remoteVersion = update.optString("version")
+                        .removePrefix("v")
+                        .takeIf { it.isNotBlank() }
+                        ?: continue
+
+                    if (!isNewerVersion(remoteVersion, currentVersion)) continue
+
+                    val downloadUrl = extractDownloadUrl(update.optJSONArray("otaFiles"))
+                    if (downloadUrl.isNullOrBlank()) continue
+
+                    val candidate = AppUpdateInfo(
+                        version = remoteVersion,
+                        downloadUrl = downloadUrl,
+                        changelog = extractChangelog(update)
+                    )
+                    if (bestUpdate == null ||
+                        compareVersions(candidate.version, bestUpdate.version) > 0
+                    ) {
+                        bestUpdate = candidate
                     }
                 }
+
+                return@withContext bestUpdate
             }
         } catch (e: Exception) {
             Log.e(TAG, "Check update failed", e)
