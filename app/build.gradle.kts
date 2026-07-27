@@ -47,6 +47,9 @@ val appVersionCode = providers.gradleProperty("versionCodeOverride").orNull?.toI
 fun sanitizeApkFileNamePart(value: String): String =
     value.replace(Regex("[^A-Za-z0-9._-]"), "-")
 
+fun apkVersionFileNamePart(value: String): String =
+    sanitizeApkFileNamePart(value.substringBefore('-'))
+
 val patchStreamWebrtcAar = tasks.register("patchStreamWebrtcAar") {
     group = "build"
     description =
@@ -226,7 +229,9 @@ android {
 androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
-            val versionPart = sanitizeApkFileNamePart(appVersionName)
+            // Keep pre-release markers in versionName/build metadata, but use a
+            // stable, concise filename for distribution artifacts.
+            val versionPart = apkVersionFileNamePart(appVersionName)
             val fileName = if (variant.name == "release") {
                 "NearCast-Android-TX-v$versionPart.apk"
             } else {
