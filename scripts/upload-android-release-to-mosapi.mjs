@@ -26,7 +26,7 @@ function deriveState(version) {
   const lower = version.toLowerCase();
   if (lower.includes('alpha')) return 'alpha';
   if (lower.includes('beta')) return 'beta';
-  return 'release';
+  return 'alpha';
 }
 
 function readChangelog() {
@@ -204,14 +204,27 @@ async function createUpdateRecord({
 }) {
   const date = new Date().toISOString();
   const payload = {
-    slug: `${productSlug}-${version}__${date}`,
+    // Mosapi uses the product slug as the stable update identifier for this
+    // client. Do not append version/date suffixes here.
+    slug: productSlug,
     version,
     date,
     state,
     type,
-    // Mosapi's current UpdateRequest schema accepts product IDs directly.
-    // The older connect/position relation payload now causes HTTP 500.
-    products: [Number(productId)],
+    // Keep the same relation payload used by the verified Mosapi release
+    // action. The API expects a Strapi relation operation here; sending a
+    // plain array of product IDs causes an opaque HTTP 500 on /updates.
+    products: {
+      disconnect: [],
+      connect: [
+        {
+          id: Number.parseInt(productId, 10),
+          position: {
+            end: true,
+          },
+        },
+      ],
+    },
     descriptions: [
       {
         locale: 'en-us',
