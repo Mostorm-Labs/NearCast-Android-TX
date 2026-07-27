@@ -87,11 +87,12 @@ jobs:
           echo "Mosapi changelog:"
           cat "$changelog_path"
           
-          # Use a more robust way to handle multi-line output in GitHub Actions
+          # Use a randomly generated delimiter to avoid collisions with content
+          EOF_MAYBE="EOF_$(date +%s)_$RANDOM"
           {
-            echo "changelog<<EOF"
+            echo "changelog<<$EOF_MAYBE"
             cat "$changelog_path"
-            echo "EOF"
+            echo "$EOF_MAYBE"
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload Android artifacts to Mosapi CMS
