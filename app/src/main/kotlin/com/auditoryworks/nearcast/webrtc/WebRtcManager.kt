@@ -24,7 +24,6 @@ import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
-import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RTCStats
@@ -733,18 +732,20 @@ class WebRtcManager(
 
     private fun requestVideoStatsSnapshot(trigger: String) {
         val pc = peerConnection ?: return
-        val sender = videoSender ?: pc.senders.firstOrNull { it.track()?.kind() == MediaStreamTrack.VIDEO_TRACK_KIND }
-        if (sender == null) {
-            Log.d(TAG, "Video stats[$trigger]: no video sender yet")
-            return
-        }
+        val sender = videoSender ?: return
 
         val snapshotId = ++videoStatsSnapshotCount
-        pc.getStats(sender, object : RTCStatsCollectorCallback {
-            override fun onStatsDelivered(report: RTCStatsReport) {
-                logVideoStatsReport(trigger, snapshotId, report)
-            }
-        })
+        try {
+            pc.getStats(sender, object : RTCStatsCollectorCallback {
+                override fun onStatsDelivered(report: RTCStatsReport) {
+                    logVideoStatsReport(trigger, snapshotId, report)
+                }
+            })
+        } catch (e: IllegalStateException) {
+            Log.d(TAG, "Video stats[$trigger#$snapshotId]: sender already disposed, skipping")
+        } catch (e: Exception) {
+            Log.w(TAG, "Video stats[$trigger#$snapshotId]: getStats failed", e)
+        }
     }
 
     private fun logVideoStatsReport(trigger: String, snapshotId: Int, report: RTCStatsReport) {
