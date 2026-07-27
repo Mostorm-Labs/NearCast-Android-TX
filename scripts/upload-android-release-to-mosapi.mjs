@@ -204,9 +204,10 @@ async function createUpdateRecord({
 }) {
   const date = new Date().toISOString();
   const payload = {
-    // Mosapi uses the product slug as the stable update identifier for this
-    // client. Do not append version/date suffixes here.
-    slug: productSlug,
+    // `productSlug` remains the fixed product identifier used by the app's
+    // update query. Mosapi update records require a unique slug, matching the
+    // format used by the verified Windows release action.
+    slug: `${productSlug}-${version}__${date}`,
     version,
     date,
     state,
