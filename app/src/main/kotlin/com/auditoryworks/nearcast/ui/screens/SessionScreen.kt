@@ -1,4 +1,4 @@
-package com.example.screencast.ui.screens
+package com.auditoryworks.nearcast.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box

@@ -1,4 +1,4 @@
-package com.example.screencast.webrtc
+package com.auditoryworks.nearcast.webrtc
 
 import kotlinx.coroutines.flow.SharedFlow
 

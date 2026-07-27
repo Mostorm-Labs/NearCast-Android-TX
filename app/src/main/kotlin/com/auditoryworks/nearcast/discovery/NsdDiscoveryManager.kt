@@ -1,4 +1,4 @@
-package com.example.screencast.discovery
+package com.auditoryworks.nearcast.discovery
 
 import android.content.Context
 import android.net.nsd.NsdManager

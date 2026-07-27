@@ -1,4 +1,4 @@
-package com.example.screencast.ui.screens
+package com.auditoryworks.nearcast.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,7 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.example.screencast.discovery.DiscoveredService
+import com.auditoryworks.nearcast.discovery.DiscoveredService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

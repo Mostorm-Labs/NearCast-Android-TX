@@ -1,4 +1,4 @@
-package com.example.screencast.service
+package com.auditoryworks.nearcast.service
 
 import android.app.Notification
 import android.app.NotificationChannel

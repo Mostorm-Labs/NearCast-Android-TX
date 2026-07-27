@@ -13,7 +13,7 @@ ScreenCastDemo is an Android WebRTC screen casting client that implements the Ne
 ./gradlew assembleDebug
 
 # Run a single test (if tests exist)
-./gradlew test --tests "com.example.screencast.*"
+./gradlew test --tests "com.auditoryworks.nearcast.*"
 
 # Clean and rebuild
 ./gradlew clean assembleDebug

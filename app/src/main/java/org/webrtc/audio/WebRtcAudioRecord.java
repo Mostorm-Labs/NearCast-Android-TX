@@ -86,6 +86,7 @@ class WebRtcAudioRecord {
   private final AudioManager audioManager;
   private final int audioSource;
   private final int audioFormat;
+  private final boolean useExternalAudioInput;
 
   private long nativeAudioRecord;
 
@@ -95,6 +96,7 @@ class WebRtcAudioRecord {
 
   private @Nullable AudioRecord audioRecord;
   private @Nullable AudioRecordThread audioThread;
+  private @Nullable ExternalAudioThread externalAudioThread;
   private @Nullable AudioDeviceInfo preferredDevice;
 
   private final ScheduledExecutorService executor;
@@ -104,6 +106,8 @@ class WebRtcAudioRecord {
   private final AtomicReference<Boolean> audioSourceMatchesRecordingSessionRef =
     new AtomicReference<>();
   private byte[] emptyBytes;
+  private int externalSampleRate;
+  private int externalChannelCount;
 
   private final @Nullable AudioRecordErrorCallback errorCallback;
   private final @Nullable AudioRecordStateCallback stateCallback;
@@ -210,7 +214,7 @@ class WebRtcAudioRecord {
       DEFAULT_AUDIO_FORMAT, null /* errorCallback */, null /* stateCallback */,
       null /* audioSamplesReadyCallback */, null /* audioRecordDataCallback */,
       WebRtcAudioEffects.isAcousticEchoCancelerSupported(),
-      WebRtcAudioEffects.isNoiseSuppressorSupported());
+      WebRtcAudioEffects.isNoiseSuppressorSupported(), false /* useExternalAudioInput */);
   }
 
   public WebRtcAudioRecord(Context context, ScheduledExecutorService scheduler,
@@ -220,6 +224,19 @@ class WebRtcAudioRecord {
                            @Nullable SamplesReadyCallback audioSamplesReadyCallback,
                            @Nullable AudioRecordDataCallback audioRecordDataCallback,
                            boolean isAcousticEchoCancelerSupported, boolean isNoiseSuppressorSupported) {
+    this(context, scheduler, audioManager, audioSource, audioFormat, errorCallback, stateCallback,
+      audioSamplesReadyCallback, audioRecordDataCallback, isAcousticEchoCancelerSupported,
+      isNoiseSuppressorSupported, false /* useExternalAudioInput */);
+  }
+
+  public WebRtcAudioRecord(Context context, ScheduledExecutorService scheduler,
+                           AudioManager audioManager, int audioSource, int audioFormat,
+                           @Nullable AudioRecordErrorCallback errorCallback,
+                           @Nullable AudioRecordStateCallback stateCallback,
+                           @Nullable SamplesReadyCallback audioSamplesReadyCallback,
+                           @Nullable AudioRecordDataCallback audioRecordDataCallback,
+                           boolean isAcousticEchoCancelerSupported, boolean isNoiseSuppressorSupported,
+                           boolean useExternalAudioInput) {
     if (isAcousticEchoCancelerSupported && !WebRtcAudioEffects.isAcousticEchoCancelerSupported()) {
       throw new IllegalArgumentException("HW AEC not supported");
     }
@@ -231,6 +248,7 @@ class WebRtcAudioRecord {
     this.audioManager = audioManager;
     this.audioSource = audioSource;
     this.audioFormat = audioFormat;
+    this.useExternalAudioInput = useExternalAudioInput;
     this.errorCallback = errorCallback;
     this.stateCallback = stateCallback;
     this.audioSamplesReadyCallback = audioSamplesReadyCallback;
@@ -291,15 +309,17 @@ class WebRtcAudioRecord {
   @CalledByNative
   private int initRecording(int sampleRate, int channels) {
     Logging.d(TAG, "initRecording(sampleRate=" + sampleRate + ", channels=" + channels + ")");
-    if (audioRecord != null) {
+    if (audioRecord != null || externalAudioThread != null) {
       reportWebRtcAudioRecordInitError("InitRecording called twice without StopRecording.");
       return -1;
     }
     final int bytesPerFrame = channels * getBytesPerSample(audioFormat);
     final int framesPerBuffer = sampleRate / BUFFERS_PER_SECOND;
+    externalSampleRate = sampleRate;
+    externalChannelCount = channels;
     byteBuffer = ByteBuffer.allocateDirect(bytesPerFrame * framesPerBuffer);
-    if (!(byteBuffer.hasArray())) {
-      reportWebRtcAudioRecordInitError("ByteBuffer does not have backing array.");
+    if (!byteBuffer.isDirect()) {
+      reportWebRtcAudioRecordInitError("ByteBuffer is not direct.");
       return -1;
     }
     Logging.d(TAG, "byteBuffer.capacity: " + byteBuffer.capacity());
@@ -308,6 +328,12 @@ class WebRtcAudioRecord {
     // the potentially expensive GetDirectBufferAddress) we simply have the
     // the native class cache the address to the memory once.
     nativeCacheDirectBufferAddress(nativeAudioRecord, byteBuffer);
+
+    if (useExternalAudioInput) {
+      audioSourceMatchesRecordingSessionRef.set(true);
+      Logging.d(TAG, "External audio input enabled; microphone AudioRecord will not be created.");
+      return framesPerBuffer;
+    }
 
     // Get the minimum buffer size required for the successful creation of
     // an AudioRecord object, in byte units.
@@ -389,6 +415,13 @@ class WebRtcAudioRecord {
   @CalledByNative
   private boolean startRecording() {
     Logging.d(TAG, "startRecording");
+    if (useExternalAudioInput) {
+      assertTrue(audioRecord == null);
+      assertTrue(externalAudioThread == null);
+      externalAudioThread = new ExternalAudioThread("ExternalAudioInputThread");
+      externalAudioThread.start();
+      return true;
+    }
     assertTrue(audioRecord != null);
     assertTrue(audioThread == null);
     try {
@@ -413,6 +446,15 @@ class WebRtcAudioRecord {
   @CalledByNative
   private boolean stopRecording() {
     Logging.d(TAG, "stopRecording");
+    if (useExternalAudioInput) {
+      if (externalAudioThread != null) {
+        externalAudioThread.stopThread();
+        ThreadUtils.joinUninterruptibly(externalAudioThread, AUDIO_RECORD_THREAD_JOIN_TIMEOUT_MS);
+        externalAudioThread = null;
+      }
+      releaseAudioResources();
+      return true;
+    }
     assertTrue(audioThread != null);
     if (future != null) {
       if (!future.isDone()) {
@@ -430,6 +472,56 @@ class WebRtcAudioRecord {
     effects.release();
     releaseAudioResources();
     return true;
+  }
+
+  /** Generates WebRTC's 10 ms audio clock from externally supplied PCM, without opening a mic. */
+  private class ExternalAudioThread extends Thread {
+    private volatile boolean keepAlive = true;
+
+    ExternalAudioThread(String name) {
+      super(name);
+    }
+
+    @Override
+    public void run() {
+      Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
+      doAudioRecordStateCallback(AUDIO_RECORD_START);
+      final long frameDurationNs = 1_000_000_000L / BUFFERS_PER_SECOND;
+      long nextFrameNs = System.nanoTime();
+      while (keepAlive) {
+        byteBuffer.clear();
+        byteBuffer.put(emptyBytes);
+        byteBuffer.flip();
+        if (audioRecordDataCallback != null) {
+          audioRecordDataCallback.onAudioDataRecorded(
+            audioFormat, externalChannelCount, externalSampleRate, byteBuffer);
+          byteBuffer.position(0);
+        }
+        final int bytesRead = byteBuffer.remaining();
+        if (keepAlive) {
+          nativeDataIsRecorded(nativeAudioRecord, bytesRead, System.nanoTime());
+        }
+        nextFrameNs += frameDurationNs;
+        final long sleepNs = nextFrameNs - System.nanoTime();
+        if (sleepNs > 0) {
+          try {
+            long sleepMs = sleepNs / 1_000_000L;
+            int sleepNanos = (int) (sleepNs % 1_000_000L);
+            Thread.sleep(sleepMs, sleepNanos);
+          } catch (InterruptedException ignored) {
+            // Stop promptly when WebRTC tears down the audio device.
+          }
+        } else {
+          nextFrameNs = System.nanoTime();
+        }
+      }
+      doAudioRecordStateCallback(AUDIO_RECORD_STOP);
+    }
+
+    void stopThread() {
+      keepAlive = false;
+      interrupt();
+    }
   }
 
   @TargetApi(Build.VERSION_CODES.M)

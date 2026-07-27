@@ -141,11 +141,11 @@ tasks.named("preBuild").configure {
 }
 
 android {
-    namespace = "com.example.screencast"
+    namespace = "com.auditoryworks.nearcast"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.screencast"
+        applicationId = "com.auditoryworks.nearcast"
         minSdk = 24
         targetSdk = 35
         versionCode = 1

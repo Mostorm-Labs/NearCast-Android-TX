@@ -1,4 +1,4 @@
-package com.example.screencast.webrtc
+package com.auditoryworks.nearcast.webrtc
 
 import android.Manifest
 import android.content.Context
@@ -8,9 +8,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -28,7 +26,6 @@ class SystemAudioCapture(private val context: Context) {
     // Pool of pre-allocated buffers to avoid per-frame clone() allocations.
     private val bufferPool = ArrayBlockingQueue<ByteArray>(16)
 
-    private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     private var readerThread: Thread? = null
     @Volatile
@@ -39,8 +36,7 @@ class SystemAudioCapture(private val context: Context) {
     fun isSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
     fun start(
-        resultCode: Int,
-        data: Intent,
+        mediaProjection: MediaProjection,
         sampleRate: Int,
         channelCount: Int
     ): Boolean {
@@ -57,10 +53,6 @@ class SystemAudioCapture(private val context: Context) {
         }
         stop()
         return try {
-            val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
-                as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-
             val channelMask = if (channelCount == 2) {
                 AudioFormat.CHANNEL_IN_STEREO
             } else {
@@ -72,7 +64,7 @@ class SystemAudioCapture(private val context: Context) {
                 .setChannelMask(channelMask)
                 .build()
 
-            val captureConfig = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
+            val captureConfig = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .build()
@@ -178,7 +170,7 @@ class SystemAudioCapture(private val context: Context) {
         audioRecord?.release()
         audioRecord = null
 
-        mediaProjection?.stop()
-        mediaProjection = null
+        // MediaProjection is shared with ScreenCapturerAndroid and owned by that capturer.
+        // Stopping it here would also terminate screen capture.
     }
 }

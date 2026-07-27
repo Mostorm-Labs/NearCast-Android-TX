@@ -1,4 +1,4 @@
-package com.example.screencast
+package com.auditoryworks.nearcast
 
 import android.app.Application
 

@@ -1,4 +1,4 @@
-package com.example.screencast.ui.screens
+package com.auditoryworks.nearcast.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.text.KeyboardOptions
@@ -25,7 +25,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
-import com.example.screencast.R
+import com.auditoryworks.nearcast.R
 
 @Composable
 fun HomeScreen(

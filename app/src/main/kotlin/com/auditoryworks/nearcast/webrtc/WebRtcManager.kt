@@ -1,4 +1,4 @@
-package com.example.screencast.webrtc
+package com.auditoryworks.nearcast.webrtc
 
 import android.content.Context
 import android.content.Intent
@@ -36,6 +36,7 @@ import java.nio.ByteBuffer
 private const val TAG = "WebRtcManager"
 private const val AUDIO_SAMPLE_RATE_HZ = 48_000
 private const val AUDIO_CHANNEL_COUNT = 1
+private const val VIDEO_CAPTURE_FPS = 30
 
 /**
  * Two-phase WebRTC manager for NearHub screen casting.
@@ -80,6 +81,7 @@ class WebRtcManager(
     private var audioDataCallbackCount = 0
     // Pre-allocated reusable buffer for audio injection — avoids per-frame ByteArray allocation.
     private var audioInjectionBuffer: ByteArray? = null
+    private var audioSilenceBuffer: ByteArray? = null
 
     @Volatile
     private var isCleanupInProgress = false
@@ -158,34 +160,37 @@ class WebRtcManager(
     }
 
     private fun createAudioDeviceModule(): JavaAudioDeviceModule {
-        // System audio is injected on the direct AudioRecord ByteBuffer via AudioRecordDataCallback,
-        // wired in app-local WebRtcAudioRecord (see patchStreamWebrtcAar + org/webrtc/audio sources).
+        // System audio is fed into WebRTC by an external 10 ms PCM clock. The patched
+        // WebRtcAudioRecord never creates a microphone AudioRecord in this mode.
         val builder = JavaAudioDeviceModule.builder(context)
             .setInputSampleRate(AUDIO_SAMPLE_RATE_HZ)
             .setUseStereoInput(false)
+            .setUseExternalAudioInput(true)
             .setUseHardwareAcousticEchoCanceler(false)
             .setUseHardwareNoiseSuppressor(false)
             .setAudioRecordDataCallback { _, _, _, audioBuffer ->
                 audioDataCallbackCount++
-                systemAudioCapture?.let { capture ->
-                    val cap = audioBuffer.capacity()
-                    // Reuse a single pre-allocated buffer to avoid per-frame ByteArray allocation.
-                    val bytes = audioInjectionBuffer?.takeIf { it.size == cap }
-                        ?: ByteArray(cap).also { audioInjectionBuffer = it }
-                    val hasSystemAudio = capture.fillAudioBuffer(bytes)
-                    if (hasSystemAudio) {
-                        audioBuffer.clear()
-                        audioBuffer.put(bytes)
-                        audioBuffer.flip()
-                        injectionFrameCount++
-                        if (injectionFrameCount % 500 == 0) {
-                            Log.d(TAG, "System audio injected: $injectionFrameCount frames")
-                        }
-                    } else {
-                        emptyInjectionCount++
-                        if (emptyInjectionCount % 500 == 0) {
-                            Log.w(TAG, "AudioRecordDataCallback: queue empty ($emptyInjectionCount), keeping mic")
-                        }
+                val cap = audioBuffer.capacity()
+                val capture = systemAudioCapture
+                val bytes = audioInjectionBuffer?.takeIf { it.size == cap }
+                    ?: ByteArray(cap).also { audioInjectionBuffer = it }
+                val silence = audioSilenceBuffer?.takeIf { it.size == cap }
+                    ?: ByteArray(cap).also { audioSilenceBuffer = it }
+                val hasSystemAudio = capture?.fillAudioBuffer(bytes) == true
+                audioBuffer.clear()
+                audioBuffer.put(if (hasSystemAudio) bytes else silence)
+                audioBuffer.flip()
+                if (hasSystemAudio) {
+                    injectionFrameCount++
+                    if (injectionFrameCount % 500 == 0) {
+                        Log.d(TAG, "System audio injected: $injectionFrameCount frames")
+                    }
+                } else {
+                    // Never pass through microphone data. ExternalAudioInput starts with silence,
+                    // and this explicit zero-fill also covers an empty playback-capture queue.
+                    emptyInjectionCount++
+                    if (emptyInjectionCount % 500 == 0) {
+                        Log.d(TAG, "System audio queue empty; sending silence ($emptyInjectionCount frames)")
                     }
                 }
             }
@@ -206,7 +211,7 @@ class WebRtcManager(
                 }
             })
 
-        Log.d(TAG, "AudioDeviceModule configured with AudioRecordDataCallback injection (patched WebRtcAudioRecord)")
+        Log.d(TAG, "AudioDeviceModule configured for external system-audio PCM (microphone disabled)")
 
         return builder.createAudioDeviceModule()
     }
@@ -321,7 +326,7 @@ class WebRtcManager(
 
     // ── Phase 2: Screen Capture + Renegotiate ──
 
-    fun startScreenCapture(resultCode: Int, data: Intent) {
+    fun startScreenCapture(data: Intent) {
         // Reset audio injection debug counters
         injectionFrameCount = 0
         emptyInjectionCount = 0
@@ -344,20 +349,20 @@ class WebRtcManager(
                 val dm = context.resources.displayMetrics
                 val width = dm.widthPixels
                 val height = dm.heightPixels
-                screenCapturer!!.startCapture(width, height, 30)
-                Log.d(TAG, "Screen capture at ${width}x${height}@30fps")
+                source.adaptOutputFormat(width, height, VIDEO_CAPTURE_FPS)
+                screenCapturer!!.startCapture(width, height, VIDEO_CAPTURE_FPS)
+                Log.d(TAG, "Screen capture at ${width}x${height}@${VIDEO_CAPTURE_FPS}fps")
             }
 
-            // Start system-audio capture only after screen capture is up.
-            // On newer Android versions, reusing the same consent intent can be rejected.
-            // If system-audio setup fails, keep casting with microphone fallback.
+            // Start system-audio capture from the same MediaProjection instance used by video.
+            // Android 14+ rejects creating a second projection from the same consent result.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val capture = SystemAudioCapture(context)
-                val started = capture.start(
-                    resultCode = resultCode,
-                    data = Intent(data),
+                val sharedProjection = screenCapturer?.mediaProjection
+                val started = sharedProjection != null && capture.start(
+                    mediaProjection = sharedProjection,
                     sampleRate = AUDIO_SAMPLE_RATE_HZ,
-                    channelCount = AUDIO_CHANNEL_COUNT // Mono to match WebRTC's AudioRecord configuration
+                    channelCount = AUDIO_CHANNEL_COUNT // Mono to match WebRTC input configuration
                 )
                 if (started) {
                     systemAudioCapture = capture
@@ -368,11 +373,11 @@ class WebRtcManager(
                     capture.stop()
                     systemAudioCapture = null
                     val reason = capture.lastError ?: "unavailable"
-                    onStatusChange("Audio mode: fallback to microphone ($reason)")
-                    Log.w(TAG, "System playback capture unavailable, fallback to microphone")
+                    onStatusChange("Audio mode: silence (system playback unavailable)")
+                    Log.w(TAG, "System playback capture unavailable; microphone remains disabled: $reason")
                 }
             } else {
-                onStatusChange("Audio mode: microphone (Android 10+ required for system audio)")
+                onStatusChange("Audio mode: silence (Android 10+ required for system audio)")
             }
 
             videoTrack = peerConnectionFactory.createVideoTrack("screen_track", videoSource).apply {

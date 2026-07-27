@@ -1,4 +1,4 @@
-package com.example.screencast
+package com.auditoryworks.nearcast
 
 import android.Manifest
 import android.app.Activity
@@ -15,14 +15,14 @@ import android.content.pm.PackageManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.example.screencast.service.ScreenCaptureService
-import com.example.screencast.ui.screens.HomeScreen
-import com.example.screencast.ui.screens.SessionScreen
-import com.example.screencast.ui.theme.ScreenCastTheme
-import com.example.screencast.webrtc.NearHubEvent
-import com.example.screencast.webrtc.NearHubSignalingClient
-import com.example.screencast.webrtc.SignalingClient
-import com.example.screencast.webrtc.WebRtcManager
+import com.auditoryworks.nearcast.service.ScreenCaptureService
+import com.auditoryworks.nearcast.ui.screens.HomeScreen
+import com.auditoryworks.nearcast.ui.screens.SessionScreen
+import com.auditoryworks.nearcast.ui.theme.ScreenCastTheme
+import com.auditoryworks.nearcast.webrtc.NearHubEvent
+import com.auditoryworks.nearcast.webrtc.NearHubSignalingClient
+import com.auditoryworks.nearcast.webrtc.SignalingClient
+import com.auditoryworks.nearcast.webrtc.WebRtcManager
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 
@@ -50,7 +50,6 @@ class MainActivity : ComponentActivity() {
                     contract = ActivityResultContracts.StartActivityForResult()
                 ) { result ->
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                        val resultCode = result.resultCode
                         val data = result.data!!
                         ScreenCaptureService.start(this@MainActivity)
                         statusText = "Starting screen capture..."
@@ -58,7 +57,7 @@ class MainActivity : ComponentActivity() {
                         // (required on Android 10+ for MediaProjection)
                         window.decorView.postDelayed({
                             try {
-                                webRtcManager?.startScreenCapture(resultCode, data)
+                                webRtcManager?.startScreenCapture(data)
                                 isCasting = true
                             } catch (e: Exception) {
                                 statusText = "Screen capture failed: ${e.message}"
@@ -75,7 +74,7 @@ class MainActivity : ComponentActivity() {
                     if (granted) {
                         launchScreenCapture(mediaProjectionLauncher)
                     } else {
-                        statusText = "Microphone permission denied, cannot cast audio"
+                        statusText = "Audio capture permission denied, cannot cast playback audio"
                     }
                 }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(

@@ -54,6 +54,7 @@ public class JavaAudioDeviceModule implements AudioDeviceModule {
     private boolean useLowLatency;
     private boolean enableVolumeLogger;
     private AudioRecordDataCallback audioRecordDataCallback;
+    private boolean useExternalAudioInput;
 
     private Builder(Context context) {
       this.context = context;
@@ -235,6 +236,15 @@ public class JavaAudioDeviceModule implements AudioDeviceModule {
     }
 
     /**
+     * Use the AudioRecord callback as an external PCM clock without opening the microphone.
+     * The callback must fill each 10 ms buffer; empty buffers are sent as silence.
+     */
+    public Builder setUseExternalAudioInput(boolean useExternalAudioInput) {
+      this.useExternalAudioInput = useExternalAudioInput;
+      return this;
+    }
+
+    /**
      * Construct an AudioDeviceModule based on the supplied arguments. The caller takes ownership
      * and is responsible for calling release().
      */
@@ -269,7 +279,7 @@ public class JavaAudioDeviceModule implements AudioDeviceModule {
       final WebRtcAudioRecord audioInput = new WebRtcAudioRecord(context, executor, audioManager,
         audioSource, audioFormat, audioRecordErrorCallback, audioRecordStateCallback,
         samplesReadyCallback, audioRecordDataCallback, useHardwareAcousticEchoCanceler,
-        useHardwareNoiseSuppressor);
+        useHardwareNoiseSuppressor, useExternalAudioInput);
       final WebRtcAudioTrack audioOutput =
         new WebRtcAudioTrack(context, audioManager, audioAttributes, audioTrackErrorCallback,
           audioTrackStateCallback, useLowLatency, enableVolumeLogger);

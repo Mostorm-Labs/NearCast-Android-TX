@@ -1,4 +1,4 @@
-package com.example.screencast.ui.theme
+package com.auditoryworks.nearcast.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme

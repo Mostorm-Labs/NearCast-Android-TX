@@ -1,4 +1,4 @@
-package com.example.screencast.discovery
+package com.auditoryworks.nearcast.discovery
 
 data class DiscoveredService(
     val name: String,
