@@ -64,6 +64,7 @@ jobs:
             },
             {
               name: 'known-windows-product-full',
+              version: 'v9.9.9',
               products: { disconnect: [], connect: [{ id: 626, position: { end: true } }] },
               fileId: 18074,
               fileMd5: '9ef8d8978f09f66103498610e96a687d',
@@ -77,8 +78,8 @@ jobs:
             },
           ];
 
-          for (const variant of variants) {
-            const version = `probe-${runId}-${variant.name}`;
+          for (const [index, variant] of variants.entries()) {
+            const version = variant.version ?? `9.9.${index + 1}`;
             const payload = {
               slug: `nearcast-tx-android-${version}`,
               version,
