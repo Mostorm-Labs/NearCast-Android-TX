@@ -12,6 +12,7 @@ import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import java.util.ArrayDeque
 import java.util.concurrent.ArrayBlockingQueue
 
@@ -40,6 +41,10 @@ class SystemAudioCapture(private val context: Context) {
         sampleRate: Int,
         channelCount: Int
     ): Boolean {
+        SessionTraceRecorder.record(
+            AUDIO_CAPTURE_TAG,
+            "start requested sampleRate=$sampleRate channelCount=$channelCount"
+        )
         lastError = null
         if (!isSupported()) return false
         val hasRecordAudioPermission = ContextCompat.checkSelfPermission(
@@ -85,6 +90,7 @@ class SystemAudioCapture(private val context: Context) {
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e(AUDIO_CAPTURE_TAG, "AudioRecord not initialized")
                 lastError = "AudioRecord init failed"
+                SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "AudioRecord init failed")
                 stop()
                 return false
             }
@@ -93,6 +99,7 @@ class SystemAudioCapture(private val context: Context) {
             if (audioRecord?.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                 Log.e(AUDIO_CAPTURE_TAG, "AudioRecord startRecording failed")
                 lastError = "AudioRecord start failed"
+                SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "AudioRecord start failed")
                 stop()
                 return false
             }
@@ -127,10 +134,18 @@ class SystemAudioCapture(private val context: Context) {
                 AUDIO_CAPTURE_TAG,
                 "System audio capture started, sampleRate=$sampleRate, channelCount=$channelCount"
             )
+            SessionTraceRecorder.record(
+                AUDIO_CAPTURE_TAG,
+                "capture started sampleRate=$sampleRate channelCount=$channelCount"
+            )
             true
         } catch (e: Exception) {
             Log.e(AUDIO_CAPTURE_TAG, "Failed to start system audio capture", e)
             lastError = e.message ?: e.javaClass.simpleName
+            SessionTraceRecorder.record(
+                AUDIO_CAPTURE_TAG,
+                "capture failed: ${e.message ?: e.javaClass.simpleName}"
+            )
             stop()
             false
         }
@@ -153,6 +168,7 @@ class SystemAudioCapture(private val context: Context) {
     }
 
     fun stop() {
+        SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "stop requested")
         running = false
         try {
             readerThread?.join(300)

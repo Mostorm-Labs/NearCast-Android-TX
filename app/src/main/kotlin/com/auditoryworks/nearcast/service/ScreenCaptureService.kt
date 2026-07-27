@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 
 /**
  * Foreground service required for MediaProjection on Android 10+.
@@ -24,24 +25,33 @@ class ScreenCaptureService : Service() {
         super.onCreate()
         createNotificationChannel()
         val notification = createNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            SessionTraceRecorder.record(TAG, "Foreground service started")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Failed to start foreground service", e)
+            SessionTraceRecorder.record(TAG, "Foreground service failed: ${e.message}")
+            stopSelf()
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        SessionTraceRecorder.record(TAG, "onStartCommand startId=$startId flags=$flags")
         return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // The casting foreground service must survive removal of the launcher task.
         Log.i(TAG, "Launcher task removed; keeping casting service alive")
+        SessionTraceRecorder.record(TAG, "Launcher task removed; service kept alive")
         super.onTaskRemoved(rootIntent)
     }
 
@@ -75,6 +85,7 @@ class ScreenCaptureService : Service() {
 
         fun start(context: Context) {
             val intent = Intent(context, ScreenCaptureService::class.java)
+            SessionTraceRecorder.record(TAG, "start() requested")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
@@ -83,6 +94,7 @@ class ScreenCaptureService : Service() {
         }
 
         fun stop(context: Context) {
+            SessionTraceRecorder.record(TAG, "stop() requested")
             context.stopService(Intent(context, ScreenCaptureService::class.java))
         }
     }

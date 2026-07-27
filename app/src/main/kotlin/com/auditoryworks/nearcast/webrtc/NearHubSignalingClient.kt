@@ -1,6 +1,7 @@
 package com.auditoryworks.nearcast.webrtc
 
 import android.util.Log
+import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -85,28 +86,33 @@ class NearHubSignalingClient(
             if (t != null) append("&token=$t")
         }
         Log.d(TAG, "Connecting to $url")
+        SessionTraceRecorder.record(TAG, "connect url=$url")
 
         val request = Request.Builder().url(url).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected")
+                SessionTraceRecorder.record(TAG, "websocket open")
                 onStatusChange("Connected to server")
                 emit(NearHubEvent.Connected)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 Log.d(TAG, "Received: ${text.take(200)}")
+                SessionTraceRecorder.record(TAG, "message ${text.take(120)}")
                 handleMessage(text)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket error: ${t.message}", t)
+                SessionTraceRecorder.record(TAG, "websocket failure: ${t.message}")
                 onStatusChange("Connection error: ${t.message}")
                 emit(NearHubEvent.Disconnected)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket closed: $code $reason")
+                SessionTraceRecorder.record(TAG, "websocket closed code=$code reason=$reason")
                 onStatusChange("Disconnected")
                 emit(NearHubEvent.Disconnected)
             }
@@ -114,6 +120,7 @@ class NearHubSignalingClient(
     }
 
     override fun join(pairCode: String, name: String) {
+        SessionTraceRecorder.record(TAG, "join pairCode=$pairCode name=$name")
         send(JSONObject().apply {
             put("type", "join")
             put("pairCode", pairCode)
@@ -122,6 +129,7 @@ class NearHubSignalingClient(
     }
 
     override fun sendOffer(sdp: String) {
+        SessionTraceRecorder.record(TAG, "sendOffer sdpLen=${sdp.length}")
         send(JSONObject().apply {
             put("type", "offer")
             put("roomId", roomId)
@@ -135,6 +143,7 @@ class NearHubSignalingClient(
     }
 
     override fun sendAnswer(sdp: String) {
+        SessionTraceRecorder.record(TAG, "sendAnswer sdpLen=${sdp.length}")
         send(JSONObject().apply {
             put("type", "answer")
             put("roomId", roomId)
@@ -149,6 +158,7 @@ class NearHubSignalingClient(
     }
 
     override fun sendIceCandidate(candidate: String, sdpMid: String, sdpMLineIndex: Int) {
+        SessionTraceRecorder.record(TAG, "sendIceCandidate mid=$sdpMid index=$sdpMLineIndex")
         send(JSONObject().apply {
             put("type", "ice-candidate")
             put("roomId", roomId)
@@ -163,6 +173,7 @@ class NearHubSignalingClient(
     }
 
     override fun sendPeerLeave() {
+        SessionTraceRecorder.record(TAG, "sendPeerLeave")
         send(JSONObject().apply {
             put("type", "peer_leave")
             put("roomId", roomId)
@@ -179,6 +190,7 @@ class NearHubSignalingClient(
     }
 
     override fun dispose() {
+        SessionTraceRecorder.record(TAG, "dispose")
         webSocket?.close(1000, "Client closing")
         scope.cancel()
     }
@@ -192,6 +204,7 @@ class NearHubSignalingClient(
                 "reconnection_token" -> {
                     reconnectionToken = json.getString("token")
                     val ttl = json.optLong("ttl", 60000)
+                    SessionTraceRecorder.record(TAG, "reconnection_token ttl=$ttl")
                     emit(NearHubEvent.TokenReceived(reconnectionToken!!, ttl))
                 }
 
@@ -200,6 +213,7 @@ class NearHubSignalingClient(
                     userId = json.getString("userId")
                     hostUserId = json.getString("hostUserId")
                     val roomName = json.optString("RoomName", "")
+                    SessionTraceRecorder.record(TAG, "joined roomId=$roomId userId=$userId hostUserId=$hostUserId roomName=$roomName")
                     onStatusChange("Joined room: $roomName")
                     emit(NearHubEvent.Joined(roomId!!, userId!!, hostUserId!!, roomName))
                 }
@@ -207,6 +221,7 @@ class NearHubSignalingClient(
                 "join_failed" -> {
                     val reason = json.optString("reason", "unknown")
                     val message = json.optString("message", reason)
+                    SessionTraceRecorder.record(TAG, "join_failed reason=$reason message=$message")
                     onStatusChange("Join failed: $message")
                     emit(NearHubEvent.JoinFailed(reason, message))
                 }
@@ -214,18 +229,21 @@ class NearHubSignalingClient(
                 "offer" -> {
                     val offer = json.getJSONObject("offer")
                     val fromUserId = json.optString("userId", "")
+                    SessionTraceRecorder.record(TAG, "offer received from=$fromUserId sdpLen=${offer.optString("sdp").length}")
                     emit(NearHubEvent.OfferReceived(offer.getString("sdp"), fromUserId))
                 }
 
                 "answer" -> {
                     val answer = json.getJSONObject("answer")
                     val fromUserId = json.optString("userId", "")
+                    SessionTraceRecorder.record(TAG, "answer received from=$fromUserId sdpLen=${answer.optString("sdp").length}")
                     emit(NearHubEvent.AnswerReceived(answer.getString("sdp"), fromUserId))
                 }
 
                 "ice-candidate" -> {
                     val candidate = json.getJSONObject("candidate")
                     val fromUserId = json.optString("userId", "")
+                    SessionTraceRecorder.record(TAG, "ice received from=$fromUserId mid=${candidate.optString("sdpMid", "0")} index=${candidate.optInt("sdpMLineIndex", 0)}")
                     emit(NearHubEvent.IceCandidateReceived(
                         candidate = candidate.getString("candidate"),
                         sdpMid = candidate.optString("sdpMid", "0"),
@@ -235,14 +253,16 @@ class NearHubSignalingClient(
                 }
 
                 "peer_leave" -> {
-                    val reason = json.optString("reason", null)
-                    val message = json.optString("message", null)
+                    val reason = json.optString("reason").takeIf { it.isNotBlank() }
+                    val message = json.optString("message").takeIf { it.isNotBlank() }
+                    SessionTraceRecorder.record(TAG, "peer_leave reason=${reason ?: ""} message=${message ?: ""}")
                     onStatusChange("Left room: ${message ?: reason ?: "disconnected"}")
                     emit(NearHubEvent.PeerLeave(reason, message))
                 }
 
                 "room_closed" -> {
                     val reason = json.optString("reason", "host_left")
+                    SessionTraceRecorder.record(TAG, "room_closed reason=$reason")
                     onStatusChange("Room closed: $reason")
                     emit(NearHubEvent.RoomClosed)
                 }
@@ -252,6 +272,7 @@ class NearHubSignalingClient(
                     userId = json.getString("userId")
                     hostUserId = json.getString("hostUserId")
                     val needsRenegotiation = json.optBoolean("needsRenegotiation", true)
+                    SessionTraceRecorder.record(TAG, "restored roomId=$roomId needsRenegotiation=$needsRenegotiation")
                     onStatusChange("Session restored")
                     emit(NearHubEvent.Restored(roomId!!, userId!!, hostUserId!!, needsRenegotiation))
                 }
@@ -259,6 +280,7 @@ class NearHubSignalingClient(
                 "error" -> {
                     val reason = json.optString("reason", "unknown")
                     val message = json.optString("message", reason)
+                    SessionTraceRecorder.record(TAG, "server_error reason=$reason message=$message")
                     onStatusChange("Error: $message")
                     emit(NearHubEvent.ServerError(reason, message))
                 }
@@ -283,6 +305,7 @@ class NearHubSignalingClient(
     private fun send(json: JSONObject) {
         val text = json.toString()
         Log.d(TAG, "Sending: ${text.take(200)}")
+        SessionTraceRecorder.record(TAG, "send ${text.take(120)}")
         webSocket?.send(text)
     }
 

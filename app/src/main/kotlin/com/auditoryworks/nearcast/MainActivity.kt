@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import com.auditoryworks.nearcast.diagnostics.LogUploadManager
+import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import com.auditoryworks.nearcast.service.ScreenCaptureService
 import com.auditoryworks.nearcast.ui.screens.HomeScreen
 import com.auditoryworks.nearcast.ui.screens.LogUploadDialog
@@ -53,6 +54,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SessionTraceRecorder.record(TAG, "Activity created")
 
         // A foreground service keeps the process alive after the task is swiped away. Restore the
         // in-process manager when the launcher UI is opened again.
@@ -71,17 +73,21 @@ class MainActivity : ComponentActivity() {
                 ) { result ->
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                         val data = result.data!!
-                        ScreenCaptureService.start(this@MainActivity)
                         statusText = "Starting screen capture..."
                         // Delay to ensure foreground service is fully started
                         // (required on Android 10+ for MediaProjection)
                         window.decorView.postDelayed({
                             try {
+                                SessionTraceRecorder.record(TAG, "Starting screen capture service")
+                                ScreenCaptureService.start(this@MainActivity)
+                                SessionTraceRecorder.record(TAG, "Starting WebRTC screen capture")
                                 webRtcManager?.startScreenCapture(data)
                                 isCasting = true
+                                SessionTraceRecorder.record(TAG, "Screen capture started")
                             } catch (e: Exception) {
                                 statusText = "Screen capture failed: ${e.message}"
                                 ScreenCaptureService.stop(this@MainActivity)
+                                SessionTraceRecorder.record(TAG, "Screen capture failed: ${e.message}")
                             }
                         }, 800)
                     } else {
@@ -112,7 +118,10 @@ class MainActivity : ComponentActivity() {
                         isLogUploadInProgress = isLogUploadInProgress,
                         onPairCodeChange = { pairCode = it },
                         onJoin = { joinRoom() },
-                        onUploadLogs = { showLogUploadDialog = true }
+                        onUploadLogs = {
+                            SessionTraceRecorder.record(TAG, "Open log upload dialog from Home")
+                            showLogUploadDialog = true
+                        }
                     )
 
                     AppScreen.SESSION -> SessionScreen(
@@ -128,12 +137,16 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                         onStopCast = {
+                            SessionTraceRecorder.record(TAG, "Stop cast requested from UI")
                             webRtcManager?.stopScreenCapture()
                             ScreenCaptureService.stop(this@MainActivity)
                             isCasting = false
                         },
                         onLeave = { leaveRoom() },
-                        onUploadLogs = { showLogUploadDialog = true }
+                        onUploadLogs = {
+                            SessionTraceRecorder.record(TAG, "Open log upload dialog from Session")
+                            showLogUploadDialog = true
+                        }
                     )
                 }
 
@@ -146,6 +159,10 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onUpload = { email, description ->
+                            SessionTraceRecorder.record(
+                                TAG,
+                                "Upload logs requested email=${email.ifBlank { "<blank>" }} description=${description.take(80)}"
+                            )
                             uploadLogs(email, description)
                         }
                     )
@@ -222,8 +239,13 @@ class MainActivity : ComponentActivity() {
                     append("\nfiles: ").append(result.fileCount)
                     append(", bytes: ").append(result.totalBytes)
                 }
+                SessionTraceRecorder.record(
+                    TAG,
+                    "Log upload succeeded uploadId=${result.uploadId} feedbackId=${result.feedbackId ?: "<none>"} files=${result.fileCount}"
+                )
             } catch (e: Exception) {
                 statusText = "Log upload failed: ${e.readableMessage()}"
+                SessionTraceRecorder.record(TAG, "Log upload failed: ${e.readableMessage()}")
             } finally {
                 isLogUploadInProgress = false
                 showLogUploadDialog = false
@@ -262,6 +284,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        SessionTraceRecorder.record(TAG, "Join requested pairCode=$effectivePairCode")
         statusText = "Connecting..."
 
         val signalingClient: SignalingClient = NearHubSignalingClient(
@@ -334,6 +357,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun leaveRoom() {
+        SessionTraceRecorder.record(TAG, "Leave room requested")
         webRtcManager?.stop()
         webRtcManager = null
         ActiveCastingSession.manager = null

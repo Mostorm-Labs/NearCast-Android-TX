@@ -43,6 +43,7 @@ object LogUploadManager {
     private const val LOGCAT_LINE_LIMIT = "20000"
     private const val DEFAULT_DESCRIPTION = "NearHub Cast logs"
     private const val DEFAULT_EMAIL = "example@mail.com"
+    private const val TRACE_FILE_NAME = "002-webrtc-flow.txt"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -79,9 +80,10 @@ object LogUploadManager {
         val stamp = timestampForFileName()
         val archiveFile = File(context.cacheDir, "nearhub-cast-logs-$stamp.zip")
         val logcat = readLogcat(context.packageName)
+        val workflowTrace = SessionTraceRecorder.snapshot()
 
         ZipOutputStream(archiveFile.outputStream().buffered()).use { zip ->
-            val manifest = buildManifest(context, logcat)
+            val manifest = buildManifest(context, logcat, workflowTrace)
             zip.putNextEntry(ZipEntry("manifest.json"))
             zip.write(manifest.toString(2).toByteArray(Charsets.UTF_8))
             zip.closeEntry()
@@ -89,13 +91,17 @@ object LogUploadManager {
             zip.putNextEntry(ZipEntry("001-app-logcat.txt"))
             zip.write(logcat.text.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
+
+            zip.putNextEntry(ZipEntry(TRACE_FILE_NAME))
+            zip.write(workflowTrace.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
         }
 
         val totalBytes = archiveFile.length()
         return CreatedArchive(
             file = archiveFile,
             info = LogArchiveInfo(
-                fileCount = 2,
+                fileCount = 3,
                 totalBytes = totalBytes,
                 truncatedCount = if (logcat.truncated) 1 else 0
             )
@@ -162,7 +168,11 @@ object LogUploadManager {
         )
     }
 
-    private fun buildManifest(context: Context, logcat: LogcatCapture): JSONObject {
+    private fun buildManifest(
+        context: Context,
+        logcat: LogcatCapture,
+        workflowTrace: String
+    ): JSONObject {
         return JSONObject().apply {
             put("format", "nearhub-cast-diagnostic-logs-v1")
             put("createdUtc", timestampUtc())
@@ -176,6 +186,11 @@ object LogUploadManager {
                     put("name", "001-app-logcat.txt")
                     put("bytes", logcat.text.toByteArray(Charsets.UTF_8).size)
                     put("truncated", logcat.truncated)
+                })
+                put(JSONObject().apply {
+                    put("name", TRACE_FILE_NAME)
+                    put("bytes", workflowTrace.toByteArray(Charsets.UTF_8).size)
+                    put("truncated", false)
                 })
             })
             put("device", JSONObject().apply {

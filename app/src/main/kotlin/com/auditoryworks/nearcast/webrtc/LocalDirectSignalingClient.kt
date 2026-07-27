@@ -1,6 +1,7 @@
 package com.auditoryworks.nearcast.webrtc
 
 import android.util.Log
+import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,9 +39,11 @@ class LocalDirectSignalingClient(
 
     override fun connect(token: String?) {
         val request = Request.Builder().url(wsUrl).build()
+        SessionTraceRecorder.record(TAG, "connect url=$wsUrl")
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Connected: $wsUrl")
+                SessionTraceRecorder.record(TAG, "websocket open")
                 onStatusChange("Connected to local receiver")
                 emit(NearHubEvent.Connected)
             }
@@ -51,12 +54,14 @@ class LocalDirectSignalingClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "Connection failed: ${t.message}", t)
+                SessionTraceRecorder.record(TAG, "websocket failure: ${t.message}")
                 onStatusChange("Local connection error: ${t.message}")
                 emit(NearHubEvent.Disconnected)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "Closed: $code $reason")
+                SessionTraceRecorder.record(TAG, "websocket closed code=$code reason=$reason")
                 onStatusChange("Disconnected")
                 emit(NearHubEvent.Disconnected)
             }
@@ -65,6 +70,7 @@ class LocalDirectSignalingClient(
 
     override fun join(pairCode: String, name: String) {
         // Local mode can still use pairCode for receiver-side auth if implemented.
+        SessionTraceRecorder.record(TAG, "join pairCode=$pairCode name=$name")
         send(JSONObject().apply {
             put("type", "join")
             put("pairCode", pairCode)
@@ -74,6 +80,7 @@ class LocalDirectSignalingClient(
     }
 
     override fun sendOffer(sdp: String) {
+        SessionTraceRecorder.record(TAG, "sendOffer sdpLen=${sdp.length}")
         send(JSONObject().apply {
             put("type", "offer")
             put("sdp", sdp)
@@ -81,6 +88,7 @@ class LocalDirectSignalingClient(
     }
 
     override fun sendAnswer(sdp: String) {
+        SessionTraceRecorder.record(TAG, "sendAnswer sdpLen=${sdp.length}")
         send(JSONObject().apply {
             put("type", "answer")
             put("sdp", sdp)
@@ -88,6 +96,7 @@ class LocalDirectSignalingClient(
     }
 
     override fun sendIceCandidate(candidate: String, sdpMid: String, sdpMLineIndex: Int) {
+        SessionTraceRecorder.record(TAG, "sendIceCandidate mid=$sdpMid index=$sdpMLineIndex")
         send(JSONObject().apply {
             put("type", "ice")
             put("candidate", candidate)
@@ -97,10 +106,12 @@ class LocalDirectSignalingClient(
     }
 
     override fun sendPeerLeave() {
+        SessionTraceRecorder.record(TAG, "sendPeerLeave")
         send(JSONObject().apply { put("type", "peer_leave") })
     }
 
     override fun dispose() {
+        SessionTraceRecorder.record(TAG, "dispose")
         webSocket?.close(1000, "Client closing")
         scope.cancel()
     }
@@ -111,20 +122,27 @@ class LocalDirectSignalingClient(
             when (json.optString("type")) {
                 "state" -> {
                     if (json.optString("state").equals("Ready", ignoreCase = true)) {
+                        SessionTraceRecorder.record(TAG, "state Ready")
                         markReady()
                     }
                 }
                 "joined" -> {
+                    SessionTraceRecorder.record(TAG, "joined")
                     markReady()
                 }
                 "offer" -> {
+                    SessionTraceRecorder.record(TAG, "offer received sdpLen=${json.optString("sdp").length}")
                     markReady()
                     emit(NearHubEvent.OfferReceived(json.getString("sdp"), "local-peer"))
                 }
-                "answer" -> emit(NearHubEvent.AnswerReceived(json.getString("sdp"), "local-peer"))
+                "answer" -> {
+                    SessionTraceRecorder.record(TAG, "answer received sdpLen=${json.optString("sdp").length}")
+                    emit(NearHubEvent.AnswerReceived(json.getString("sdp"), "local-peer"))
+                }
                 "ice", "ice-candidate" -> {
                     if (json.has("candidate") && json.optJSONObject("candidate") != null) {
                         val c = json.getJSONObject("candidate")
+                        SessionTraceRecorder.record(TAG, "ice received mid=${c.optString("sdpMid", "0")} index=${c.optInt("sdpMLineIndex", 0)}")
                         emit(
                             NearHubEvent.IceCandidateReceived(
                                 candidate = c.getString("candidate"),
@@ -134,6 +152,7 @@ class LocalDirectSignalingClient(
                             )
                         )
                     } else {
+                        SessionTraceRecorder.record(TAG, "ice received mid=${json.optString("sdpMid", "0")} index=${json.optInt("sdpMLineIndex", 0)}")
                         emit(
                             NearHubEvent.IceCandidateReceived(
                                 candidate = json.getString("candidate"),
@@ -144,7 +163,10 @@ class LocalDirectSignalingClient(
                         )
                     }
                 }
-                "peer_leave" -> emit(NearHubEvent.PeerLeave("peer_leave", "Peer left local session"))
+                "peer_leave" -> {
+                    SessionTraceRecorder.record(TAG, "peer_leave")
+                    emit(NearHubEvent.PeerLeave("peer_leave", "Peer left local session"))
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse local signal: ${e.message}", e)
@@ -154,6 +176,7 @@ class LocalDirectSignalingClient(
     private fun markReady() {
         if (hasReadySignal) return
         hasReadySignal = true
+        SessionTraceRecorder.record(TAG, "peer ready")
         onStatusChange("Local peer ready, establishing P2P...")
         emit(
             NearHubEvent.Joined(
@@ -166,7 +189,9 @@ class LocalDirectSignalingClient(
     }
 
     private fun send(json: JSONObject) {
-        webSocket?.send(json.toString())
+        val text = json.toString()
+        SessionTraceRecorder.record(TAG, "send ${text.take(120)}")
+        webSocket?.send(text)
     }
 
     private fun emit(event: NearHubEvent) {

@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
+import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -108,6 +109,7 @@ class WebRtcManager(
     }
 
     init {
+        SessionTraceRecorder.record(TAG, "WebRtcManager init")
         synchronized(Companion) {
             if (!isFactoryInitialized) {
                 PeerConnectionFactory.initialize(
@@ -139,6 +141,7 @@ class WebRtcManager(
             signalingClient.events.collect { event ->
                 when (event) {
                     is NearHubEvent.Joined -> {
+                        SessionTraceRecorder.record(TAG, "signaling joined roomId=${event.roomId} userId=${event.userId}")
                         onStatusChange("Joined room, establishing P2P...")
                         connectP2P()
                     }
@@ -146,20 +149,24 @@ class WebRtcManager(
                     is NearHubEvent.AnswerReceived -> handleRemoteAnswer(event.sdp)
                     is NearHubEvent.IceCandidateReceived -> handleRemoteIceCandidate(event)
                     is NearHubEvent.Restored -> {
+                        SessionTraceRecorder.record(TAG, "session restored needsRenegotiation=${event.needsRenegotiation}")
                         if (event.needsRenegotiation) {
                             onStatusChange("Session restored, renegotiating...")
                             createAndSendOffer()
                         }
                     }
                     is NearHubEvent.PeerLeave -> {
+                        SessionTraceRecorder.record(TAG, "peer left")
                         onStatusChange("Removed from room")
                         cleanupP2P()
                     }
                     is NearHubEvent.RoomClosed -> {
+                        SessionTraceRecorder.record(TAG, "room closed")
                         onStatusChange("Room closed")
                         cleanupP2P()
                     }
                     is NearHubEvent.ServerError -> {
+                        SessionTraceRecorder.record(TAG, "server error: ${event.message}")
                         onStatusChange("Server error: ${event.message}")
                     }
                     else -> {}
@@ -171,6 +178,7 @@ class WebRtcManager(
     private fun createAudioDeviceModule(): JavaAudioDeviceModule {
         // System audio is fed into WebRTC by an external 10 ms PCM clock. The patched
         // WebRtcAudioRecord never creates a microphone AudioRecord in this mode.
+        SessionTraceRecorder.record(TAG, "configure audio device module (external system audio, mic disabled)")
         val builder = JavaAudioDeviceModule.builder(context)
             .setInputSampleRate(AUDIO_SAMPLE_RATE_HZ)
             .setUseStereoInput(false)
@@ -228,6 +236,7 @@ class WebRtcManager(
     // ── Phase 1: P2P + DataChannel (no media) ──
 
     private fun connectP2P() {
+        SessionTraceRecorder.record(TAG, "connectP2P")
         setupPeerConnection()
         setupDataChannel()
         createAndSendOffer()
@@ -240,6 +249,7 @@ class WebRtcManager(
             rtcConfig, createPeerConnectionObserver()
         )
         Log.d(TAG, "PeerConnection created")
+        SessionTraceRecorder.record(TAG, "PeerConnection created")
     }
 
     private fun setupDataChannel() {
@@ -250,6 +260,7 @@ class WebRtcManager(
                 val state = dataChannel?.state()
                 isDataChannelOpen = state == DataChannel.State.OPEN
                 Log.d(TAG, "DataChannel state: $state")
+                SessionTraceRecorder.record(TAG, "DataChannel state=$state")
                 if (isDataChannelOpen) {
                     onStatusChange("P2P connected, ready to cast")
                 }
@@ -262,9 +273,11 @@ class WebRtcManager(
             }
         })
         Log.d(TAG, "DataChannel created")
+        SessionTraceRecorder.record(TAG, "DataChannel created")
     }
 
     private fun createAndSendOffer() {
+        SessionTraceRecorder.record(TAG, "createAndSendOffer")
         // Detect if an audio track already exists among the senders (Phase 2 — after addTrack).
         // When it exists, omit OfferToReceiveAudio so WebRTC includes the m=audio
         // line with correct sendonly direction derived from the transceiver itself.
@@ -286,6 +299,10 @@ class WebRtcManager(
                 val hasAudio = sdp.description.contains("m=audio")
                 val hasData = sdp.description.contains("m=application")
                 Log.d(TAG, "=== OFFER CREATED === video=$hasVideo audio=$hasAudio data=$hasData sdpLen=${sdp.description.length}")
+                SessionTraceRecorder.record(
+                    TAG,
+                    "offer created video=$hasVideo audio=$hasAudio data=$hasData sdpLen=${sdp.description.length}"
+                )
 
                 // Extract and log audio m-line details for debugging.
                 if (hasAudio) {
@@ -316,15 +333,18 @@ class WebRtcManager(
                 }
                 if (sentViaDataChannel) {
                     Log.d(TAG, "Offer sent via DataChannel")
+                    SessionTraceRecorder.record(TAG, "offer sent via DataChannel")
                 } else {
                     signalingClient.sendOffer(sdp.description)
                     Log.d(TAG, "Offer sent via WebSocket (fallback)")
+                    SessionTraceRecorder.record(TAG, "offer sent via WebSocket")
                 }
                 onStatusChange("Offer sent")
             }
 
             override fun onCreateFailure(error: String) {
                 Log.e(TAG, "Create offer failed: $error")
+                SessionTraceRecorder.record(TAG, "offer create failed: $error")
                 onStatusChange("Create offer failed")
             }
 
@@ -336,6 +356,7 @@ class WebRtcManager(
     // ── Phase 2: Screen Capture + Renegotiate ──
 
     fun startScreenCapture(data: Intent) {
+        SessionTraceRecorder.record(TAG, "startScreenCapture begin")
         // Reset audio injection debug counters
         injectionFrameCount = 0
         emptyInjectionCount = 0
@@ -345,6 +366,7 @@ class WebRtcManager(
             screenCapturer = ScreenCapturerAndroid(data, object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.d(TAG, "MediaProjection stopped by system")
+                    SessionTraceRecorder.record(TAG, "MediaProjection stopped by system")
                     onStatusChange("Screen capture stopped")
                 }
             })
@@ -361,6 +383,10 @@ class WebRtcManager(
                 source.adaptOutputFormat(width, height, VIDEO_CAPTURE_FPS)
                 screenCapturer!!.startCapture(width, height, VIDEO_CAPTURE_FPS)
                 Log.d(TAG, "Screen capture at ${width}x${height}@${VIDEO_CAPTURE_FPS}fps")
+                SessionTraceRecorder.record(
+                    TAG,
+                    "screen capture started ${width}x${height}@${VIDEO_CAPTURE_FPS}fps"
+                )
             }
 
             // Start system-audio capture from the same MediaProjection instance used by video.
@@ -377,6 +403,7 @@ class WebRtcManager(
                     systemAudioCapture = capture
                     Log.d(TAG, "SystemAudioCapture wired to audio injection callback")
                     Log.d(TAG, "System playback capture enabled (mono 48kHz, 960 bytes/frame)")
+                    SessionTraceRecorder.record(TAG, "system audio capture started")
                     onStatusChange("Audio mode: system playback capture")
                 } else {
                     capture.stop()
@@ -384,9 +411,11 @@ class WebRtcManager(
                     val reason = capture.lastError ?: "unavailable"
                     onStatusChange("Audio mode: silence (system playback unavailable)")
                     Log.w(TAG, "System playback capture unavailable; microphone remains disabled: $reason")
+                    SessionTraceRecorder.record(TAG, "system audio unavailable: $reason")
                 }
             } else {
                 onStatusChange("Audio mode: silence (Android 10+ required for system audio)")
+                SessionTraceRecorder.record(TAG, "system audio unavailable: Android 10+ required")
             }
 
             videoTrack = peerConnectionFactory.createVideoTrack("screen_track", videoSource).apply {
@@ -400,6 +429,10 @@ class WebRtcManager(
             }
             Log.d(TAG, "audioSource and audioTrack created, audioTrack.enabled=true")
             Log.d(TAG, "systemAudioCapture=${systemAudioCapture != null}, audioSource=${audioSource != null}")
+            SessionTraceRecorder.record(
+                TAG,
+                "audio track created systemAudioCapture=${systemAudioCapture != null} audioSource=${audioSource != null}"
+            )
 
             // Stream ID is critical: the receiver uses it to group tracks into a MediaStream
             // and bind it to the video player. Without it, ontrack.streams may be empty.
@@ -411,15 +444,21 @@ class WebRtcManager(
                 "Tracks added to PeerConnection with streamId=$streamId " +
                     "videoSender=${videoSender?.id()} audioSender=${audioSender?.id()}"
             )
+            SessionTraceRecorder.record(
+                TAG,
+                "tracks added videoSender=${videoSender?.id()} audioSender=${audioSender?.id()}"
+            )
 
             isCasting = true
             muteLocalPlaybackForCasting()
             startVideoStatsPolling()
             onStatusChange("Screen capture started, renegotiating...")
+            SessionTraceRecorder.record(TAG, "screen capture active, renegotiating")
 
             createAndSendOffer()
         } catch (e: Exception) {
             Log.e(TAG, "startScreenCapture failed", e)
+            SessionTraceRecorder.record(TAG, "startScreenCapture failed: ${e.message}")
             restoreLocalPlaybackAfterCasting()
             onStatusChange("Screen capture failed: ${e.message}")
             throw e
@@ -427,6 +466,7 @@ class WebRtcManager(
     }
 
     fun stopScreenCapture() {
+        SessionTraceRecorder.record(TAG, "stopScreenCapture")
         stopVideoStatsPolling()
         try { screenCapturer?.stopCapture() } catch (_: Exception) {}
         try { screenCapturer?.dispose() } catch (_: Exception) {}
@@ -455,6 +495,7 @@ class WebRtcManager(
         restoreLocalPlaybackAfterCasting()
         lastRemoteAnswerSdp = null
         onStatusChange("Casting stopped")
+        SessionTraceRecorder.record(TAG, "casting stopped")
 
         createAndSendOffer()
     }
@@ -463,12 +504,14 @@ class WebRtcManager(
 
     private fun handleRemoteOffer(sdp: String) {
         Log.d(TAG, "Handling remote offer")
+        SessionTraceRecorder.record(TAG, "remote offer received sdpLen=${sdp.length}")
         val remoteDesc = SessionDescription(SessionDescription.Type.OFFER, sdp)
         peerConnection?.setRemoteDescription(NoOpSdpObserver("setRemoteOffer"), remoteDesc)
 
         peerConnection?.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(NoOpSdpObserver("setLocalAnswer"), sdp)
+                SessionTraceRecorder.record(TAG, "local answer created sdpLen=${sdp.description.length}")
                 val sentViaDataChannel = if (isDataChannelOpen) {
                     trySendSignalViaDataChannel("answer", sdp.description)
                 } else {
@@ -476,11 +519,15 @@ class WebRtcManager(
                 }
                 if (!sentViaDataChannel) {
                     signalingClient.sendAnswer(sdp.description)
+                    SessionTraceRecorder.record(TAG, "answer sent via WebSocket")
+                } else {
+                    SessionTraceRecorder.record(TAG, "answer sent via DataChannel")
                 }
             }
 
             override fun onCreateFailure(error: String) {
                 Log.e(TAG, "Create answer failed: $error")
+                SessionTraceRecorder.record(TAG, "answer create failed: $error")
             }
 
             override fun onSetSuccess() {}
@@ -490,6 +537,7 @@ class WebRtcManager(
 
     private fun handleRemoteAnswer(sdp: String) {
         Log.d(TAG, "=== ANSWER RECEIVED === sdp length=${sdp.length}")
+        SessionTraceRecorder.record(TAG, "remote answer received sdpLen=${sdp.length}")
         // Log audio configuration in the answer.
         val hasAudio = sdp.contains("m=audio")
         val audioLineStart = if (hasAudio) sdp.indexOf("m=audio") else -1
@@ -506,12 +554,14 @@ class WebRtcManager(
         val signalingState = peerConnection?.signalingState()
         if (signalingState != PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
             Log.w(TAG, "Answer ignored due to signaling state=$signalingState")
+            SessionTraceRecorder.record(TAG, "answer ignored signalingState=$signalingState")
             return
         }
         val remoteDesc = SessionDescription(SessionDescription.Type.ANSWER, sdp)
         peerConnection?.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
                 Log.d(TAG, "=== ANSWER SET SUCCESS === isCasting=$isCasting")
+                SessionTraceRecorder.record(TAG, "remote answer set success isCasting=$isCasting")
                 lastRemoteAnswerSdp = sdp
                 if (isCasting) {
                     onStatusChange("Casting")
@@ -521,6 +571,7 @@ class WebRtcManager(
             }
             override fun onSetFailure(error: String) {
                 Log.e(TAG, "=== ANSWER SET FAILED === $error")
+                SessionTraceRecorder.record(TAG, "remote answer set failed: $error")
                 onStatusChange("Answer failed: $error")
             }
             override fun onCreateSuccess(sdp: SessionDescription) {}
@@ -530,6 +581,7 @@ class WebRtcManager(
 
     private fun handleRemoteIceCandidate(event: NearHubEvent.IceCandidateReceived) {
         val candidate = IceCandidate(event.sdpMid, event.sdpMLineIndex, event.candidate)
+        SessionTraceRecorder.record(TAG, "remote ICE candidate mid=${event.sdpMid} index=${event.sdpMLineIndex}")
         peerConnection?.addIceCandidate(candidate)
     }
 
@@ -543,6 +595,7 @@ class WebRtcManager(
     private fun trySendSignalViaDataChannel(type: String, sdp: String): Boolean {
         if (!isDataChannelOpen) return false
         return try {
+            SessionTraceRecorder.record(TAG, "send $type via DataChannel")
             val msg = JSONObject().apply {
                 put("action", "webrtc-signal")
                 put("data", JSONObject().apply {
@@ -556,6 +609,7 @@ class WebRtcManager(
             sendDataChannelMessage(msg)
         } catch (e: Exception) {
             Log.w(TAG, "DataChannel signal send failed, will fallback to WebSocket", e)
+            SessionTraceRecorder.record(TAG, "send $type via DataChannel failed: ${e.message}")
             false
         }
     }
@@ -643,11 +697,13 @@ class WebRtcManager(
     private fun createPeerConnectionObserver() = object : PeerConnection.Observer {
         override fun onIceCandidate(candidate: IceCandidate) {
             Log.d(TAG, "Local ICE candidate: ${candidate.sdp.take(50)}")
+            SessionTraceRecorder.record(TAG, "local ICE candidate mid=${candidate.sdpMid} index=${candidate.sdpMLineIndex}")
             signalingClient.sendIceCandidate(candidate.sdp, candidate.sdpMid, candidate.sdpMLineIndex)
         }
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
             Log.d(TAG, "ICE connection state: $state")
+            SessionTraceRecorder.record(TAG, "ICE state=$state")
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED -> {
@@ -668,6 +724,7 @@ class WebRtcManager(
 
         override fun onDataChannel(channel: DataChannel) {
             Log.d(TAG, "Remote DataChannel received: ${channel.label()}")
+            SessionTraceRecorder.record(TAG, "remote DataChannel received label=${channel.label()}")
         }
 
         override fun onSignalingChange(state: PeerConnection.SignalingState) {}
@@ -729,6 +786,7 @@ class WebRtcManager(
     }
 
     private fun requestVideoStatsSnapshot(trigger: String) {
+        if (isCleanupInProgress) return
         val pc = peerConnection ?: return
         val sender = videoSender ?: return
 
@@ -741,8 +799,10 @@ class WebRtcManager(
             })
         } catch (e: IllegalStateException) {
             Log.d(TAG, "Video stats[$trigger#$snapshotId]: sender already disposed, skipping")
+            SessionTraceRecorder.record(TAG, "video stats skipped sender disposed trigger=$trigger")
         } catch (e: Exception) {
             Log.w(TAG, "Video stats[$trigger#$snapshotId]: getStats failed", e)
+            SessionTraceRecorder.record(TAG, "video stats failed trigger=$trigger: ${e.message}")
         }
     }
 
@@ -814,6 +874,7 @@ class WebRtcManager(
     private fun cleanupP2P() {
         if (isCleanupInProgress) return
         isCleanupInProgress = true
+        SessionTraceRecorder.record(TAG, "cleanupP2P begin")
 
         isCasting = false
         stopVideoStatsPolling()
@@ -842,6 +903,7 @@ class WebRtcManager(
         peerConnection?.close()
         try { peerConnection?.dispose() } catch (_: Exception) {}
         peerConnection = null
+        SessionTraceRecorder.record(TAG, "cleanupP2P end")
     }
 
     /**
@@ -854,6 +916,7 @@ class WebRtcManager(
         mutedLocalPlaybackForCasting = true
         val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         Log.d(TAG, "Local playback mute skipped during casting: streamVolume=$current")
+        SessionTraceRecorder.record(TAG, "local playback mute skipped volume=$current")
     }
 
     private fun restoreLocalPlaybackAfterCasting() {
@@ -861,14 +924,17 @@ class WebRtcManager(
         try {
             val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
             Log.d(TAG, "Local playback restore skipped after casting: streamVolume=$current")
+            SessionTraceRecorder.record(TAG, "local playback restore skipped volume=$current")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to restore local playback volume", e)
+            SessionTraceRecorder.record(TAG, "local playback restore failed: ${e.message}")
         } finally {
             mutedLocalPlaybackForCasting = false
         }
     }
 
     fun stop() {
+        SessionTraceRecorder.record(TAG, "stop")
         sendLeaveViaDataChannel()
         signalingClient.sendPeerLeave()
         cleanupP2P()
