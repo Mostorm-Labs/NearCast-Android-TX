@@ -10,6 +10,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.webrtc.AudioSource
@@ -21,9 +24,14 @@ import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
+import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RTCStats
+import org.webrtc.RTCStatsCollectorCallback
+import org.webrtc.RTCStatsReport
 import org.webrtc.RtpReceiver
+import org.webrtc.RtpSender
 import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
@@ -67,14 +75,18 @@ class WebRtcManager(
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var videoSource: VideoSource? = null
     private var videoTrack: VideoTrack? = null
+    private var videoSender: RtpSender? = null
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
+    private var audioSender: RtpSender? = null
     private var systemAudioCapture: SystemAudioCapture? = null
     private var lastRemoteAnswerSdp: String? = null
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var mutedLocalPlaybackForCasting = false
     private var previousMusicStreamVolume: Int? = null
     private var shouldRestoreMusicVolumeAfterCasting = false
+    private var videoStatsPollingJob: Job? = null
+    private var videoStatsSnapshotCount = 0
 
     private var injectionFrameCount = 0
     private var emptyInjectionCount = 0
@@ -395,12 +407,17 @@ class WebRtcManager(
             // Stream ID is critical: the receiver uses it to group tracks into a MediaStream
             // and bind it to the video player. Without it, ontrack.streams may be empty.
             val streamId = listOf("screen-share")
-            videoTrack?.let { peerConnection?.addTrack(it, streamId) }
-            audioTrack?.let { peerConnection?.addTrack(it, streamId) }
-            Log.d(TAG, "Tracks added to PeerConnection with streamId=$streamId")
+            videoSender = videoTrack?.let { peerConnection?.addTrack(it, streamId) }
+            audioSender = audioTrack?.let { peerConnection?.addTrack(it, streamId) }
+            Log.d(
+                TAG,
+                "Tracks added to PeerConnection with streamId=$streamId " +
+                    "videoSender=${videoSender?.id()} audioSender=${audioSender?.id()}"
+            )
 
             isCasting = true
             muteLocalPlaybackForCasting()
+            startVideoStatsPolling()
             onStatusChange("Screen capture started, renegotiating...")
 
             createAndSendOffer()
@@ -413,6 +430,7 @@ class WebRtcManager(
     }
 
     fun stopScreenCapture() {
+        stopVideoStatsPolling()
         try { screenCapturer?.stopCapture() } catch (_: Exception) {}
         try { screenCapturer?.dispose() } catch (_: Exception) {}
         screenCapturer = null
@@ -427,6 +445,8 @@ class WebRtcManager(
         videoTrack = null
         try { audioTrack?.dispose() } catch (_: Exception) {}
         audioTrack = null
+        videoSender = null
+        audioSender = null
         try { videoSource?.dispose() } catch (_: Exception) {}
         videoSource = null
         try { audioSource?.dispose() } catch (_: Exception) {}
@@ -636,6 +656,7 @@ class WebRtcManager(
                 PeerConnection.IceConnectionState.COMPLETED -> {
                     if (isCasting) {
                         logAudioTransceiverStatus()
+                        requestVideoStatsSnapshot("ice-connected")
                         onStatusChange("Casting")
                     }
                     else onStatusChange("P2P connected, ready to cast")
@@ -693,6 +714,102 @@ class WebRtcManager(
         }
     }
 
+    private fun startVideoStatsPolling() {
+        if (videoStatsPollingJob?.isActive == true) return
+
+        videoStatsPollingJob = scope.launch {
+            while (isActive) {
+                requestVideoStatsSnapshot("poll")
+                delay(2_000)
+            }
+        }
+        Log.d(TAG, "Video stats polling started")
+    }
+
+    private fun stopVideoStatsPolling() {
+        videoStatsPollingJob?.cancel()
+        videoStatsPollingJob = null
+    }
+
+    private fun requestVideoStatsSnapshot(trigger: String) {
+        val pc = peerConnection ?: return
+        val sender = videoSender ?: pc.senders.firstOrNull { it.track()?.kind() == MediaStreamTrack.VIDEO_TRACK_KIND }
+        if (sender == null) {
+            Log.d(TAG, "Video stats[$trigger]: no video sender yet")
+            return
+        }
+
+        val snapshotId = ++videoStatsSnapshotCount
+        pc.getStats(sender, object : RTCStatsCollectorCallback {
+            override fun onStatsDelivered(report: RTCStatsReport) {
+                logVideoStatsReport(trigger, snapshotId, report)
+            }
+        })
+    }
+
+    private fun logVideoStatsReport(trigger: String, snapshotId: Int, report: RTCStatsReport) {
+        try {
+            val stats = report.statsMap.values
+            val videoSource = stats.firstOrNull { it.type == "media-source" && it.isVideoStats() }
+            val outboundVideo = stats.firstOrNull { it.type == "outbound-rtp" && it.isVideoStats() }
+
+            if (videoSource == null && outboundVideo == null) {
+                Log.d(TAG, "Video stats[$trigger#$snapshotId]: no video entries (${stats.size} stats)")
+                return
+            }
+
+            val sourceText = videoSource?.let {
+                val width = it.doubleMember("width")?.toInt()
+                val height = it.doubleMember("height")?.toInt()
+                val fps = it.doubleMember("framesPerSecond")
+                val frames = it.longMember("frames")
+                "source=${width ?: "?"}x${height ?: "?"}@${fps ?: "?"}fps frames=${frames ?: "?"}"
+            } ?: "source=none"
+
+            val outboundText = outboundVideo?.let {
+                val frameWidth = it.doubleMember("frameWidth")?.toInt()
+                val frameHeight = it.doubleMember("frameHeight")?.toInt()
+                val fps = it.doubleMember("framesPerSecond")
+                val framesSent = it.longMember("framesSent")
+                val framesEncoded = it.longMember("framesEncoded")
+                val bytesSent = it.longMember("bytesSent")
+                val bitrate = it.doubleMember("targetBitrate")?.toLong()
+                val encoder = it.stringMember("encoderImplementation")
+                val qlr = it.stringMember("qualityLimitationReason")
+                "outbound=${frameWidth ?: "?"}x${frameHeight ?: "?"}@${fps ?: "?"}fps " +
+                    "encoded=${framesEncoded ?: "?"} sent=${framesSent ?: "?"} bytes=${bytesSent ?: "?"} " +
+                    "bitrate=${bitrate ?: "?"} qlr=${qlr ?: "?"} encoder=${encoder ?: "?"}"
+            } ?: "outbound=none"
+
+            Log.d(TAG, "Video stats[$trigger#$snapshotId]: $sourceText | $outboundText")
+        } catch (e: Exception) {
+            Log.w(TAG, "Video stats[$trigger#$snapshotId] parsing failed", e)
+        }
+    }
+
+    private fun RTCStats.isVideoStats(): Boolean {
+        val kind = stringMember("kind") ?: stringMember("mediaType")
+        if (kind == "video") return true
+        val trackId = stringMember("trackIdentifier")
+        return trackId != null && trackId == videoTrack?.id()
+    }
+
+    private fun RTCStats.stringMember(name: String): String? {
+        val value = members[name] ?: return null
+        return value.toString().takeIf { it.isNotBlank() }
+    }
+
+    private fun RTCStats.doubleMember(name: String): Double? {
+        val value = members[name] ?: return null
+        return when (value) {
+            is Number -> value.toDouble()
+            is String -> value.toDoubleOrNull()
+            else -> null
+        }
+    }
+
+    private fun RTCStats.longMember(name: String): Long? = doubleMember(name)?.toLong()
+
     // ── Cleanup ──
 
     private fun cleanupP2P() {
@@ -700,6 +817,7 @@ class WebRtcManager(
         isCleanupInProgress = true
 
         isCasting = false
+        stopVideoStatsPolling()
         restoreLocalPlaybackAfterCasting()
         isDataChannelOpen = false
         lastRemoteAnswerSdp = null
@@ -712,6 +830,8 @@ class WebRtcManager(
         videoTrack = null
         try { audioTrack?.dispose() } catch (_: Exception) {}
         audioTrack = null
+        videoSender = null
+        audioSender = null
         try { videoSource?.dispose() } catch (_: Exception) {}
         videoSource = null
         try { audioSource?.dispose() } catch (_: Exception) {}
