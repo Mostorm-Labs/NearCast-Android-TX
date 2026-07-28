@@ -26,10 +26,10 @@ object UpdateManager {
     private const val PRODUCT_SLUG = "nearcast-tx-android"
     private const val API_BASE_URL = "https://mosapi.auditoryworks.co/v1"
     private const val UPDATE_QUERY =
-        // Mosapi sorts the version field lexicographically, so asking for the
-        // first version can incorrectly return 1.0.9 before 1.0.10. Fetch a
-        // batch and select the highest semantic version locally instead.
-        "sort=createdAt:desc&limit=50&populate=otaFiles.file,descriptions"
+        // Avoid a version sort query: Mosapi treats versions as strings, which
+        // can put 1.0.9 before 1.0.10. Fetch a batch and select the highest
+        // semantic version locally instead.
+        "limit=50&populate=otaFiles.file,descriptions"
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
