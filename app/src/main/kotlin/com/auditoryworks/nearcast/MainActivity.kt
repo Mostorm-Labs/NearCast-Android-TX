@@ -6,6 +6,9 @@ import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -49,6 +52,29 @@ enum class AppScreen { HOME, SESSION }
 /** Keeps the active WebRTC session alive while the UI task is removed or recreated. */
 private object ActiveCastingSession {
     var manager: WebRtcManager? = null
+    var captureStartPending: Boolean = false
+        private set
+    private var captureRequestId: Long = 0
+
+    fun beginCaptureStart(): Long {
+        captureRequestId += 1
+        captureStartPending = true
+        return captureRequestId
+    }
+
+    fun isCurrentCaptureRequest(requestId: Long): Boolean =
+        captureStartPending && captureRequestId == requestId
+
+    fun finishCaptureStart(requestId: Long) {
+        if (captureRequestId == requestId) {
+            captureStartPending = false
+        }
+    }
+
+    fun cancelCaptureStart() {
+        captureRequestId += 1
+        captureStartPending = false
+    }
 }
 
 private const val TAG = "MainActivity"
@@ -78,11 +104,16 @@ class MainActivity : ComponentActivity() {
         // A foreground service keeps the process alive after the task is swiped away. Restore the
         // in-process manager when the launcher UI is opened again.
         webRtcManager = ActiveCastingSession.manager
-        if (webRtcManager?.isCasting == true) {
+        webRtcManager?.setOnStatusChange(::handleWebRtcStatus)
+        if (webRtcManager?.isCasting == true || ActiveCastingSession.captureStartPending) {
             currentScreen = AppScreen.SESSION
             isCasting = true
             isP2PReady = webRtcManager?.isDataChannelOpen == true
-            statusText = "Casting"
+            statusText = if (webRtcManager?.isCasting == true) {
+                "Casting"
+            } else {
+                "Starting screen capture..."
+            }
         }
 
         lifecycleScope.launch {
@@ -96,7 +127,10 @@ class MainActivity : ComponentActivity() {
                 ) { result ->
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                         val data = result.data!!
+                        val captureRequestId = ActiveCastingSession.beginCaptureStart()
+                        isCasting = true
                         statusText = "Starting screen capture..."
+                        Log.i(TAG, "MediaProjection permission granted requestId=$captureRequestId")
                         // 1. Start foreground service immediately after permission granted.
                         // On Android 14+, the foreground service MUST be started before MediaProjection
                         // is created from the result data.
@@ -105,20 +139,34 @@ class MainActivity : ComponentActivity() {
 
                         // 2. Short delay to ensure the system has processed the foreground service start
                         // and it is in "foreground" state before we attempt to use the MediaProjection.
-                        window.decorView.postDelayed({
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (!ActiveCastingSession.isCurrentCaptureRequest(captureRequestId)) {
+                                Log.i(TAG, "Ignoring cancelled screen capture requestId=$captureRequestId")
+                                return@postDelayed
+                            }
                             try {
+                                val manager = ActiveCastingSession.manager
+                                    ?: throw IllegalStateException("Casting session is no longer available")
                                 SessionTraceRecorder.record(TAG, "Starting WebRTC screen capture")
-                                webRtcManager?.startScreenCapture(data)
+                                Log.i(TAG, "Starting WebRTC screen capture requestId=$captureRequestId")
+                                if (!manager.isCasting) {
+                                    manager.startScreenCapture(data)
+                                }
                                 isCasting = true
                                 SessionTraceRecorder.record(TAG, "Screen capture started")
                             } catch (e: Exception) {
                                 val readableError = e.readableMessage()
+                                isCasting = false
                                 statusText = "Screen capture failed: $readableError"
                                 ScreenCaptureService.stop(this@MainActivity)
                                 SessionTraceRecorder.record(TAG, "Screen capture failed: $readableError")
+                            } finally {
+                                ActiveCastingSession.finishCaptureStart(captureRequestId)
                             }
                         }, 800)
                     } else {
+                        ActiveCastingSession.cancelCaptureStart()
+                        isCasting = false
                         statusText = "Screen capture permission denied"
                     }
                 }
@@ -172,6 +220,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onStopCast = {
                             SessionTraceRecorder.record(TAG, "Stop cast requested from UI")
+                            ActiveCastingSession.cancelCaptureStart()
                             webRtcManager?.stopScreenCapture()
                             ScreenCaptureService.stop(this@MainActivity)
                             isCasting = false
@@ -419,39 +468,7 @@ class MainActivity : ComponentActivity() {
         webRtcManager = WebRtcManager(
             context = applicationContext,
             signalingClient = signalingClient,
-            onStatusChange = { status ->
-                runOnUiThread {
-                    if (status.startsWith("Audio mode:")) {
-                        lastAudioModeStatus = status
-                    }
-                    statusText = when {
-                        status == "Casting" && lastAudioModeStatus.isNotBlank() ->
-                            "Casting\n$lastAudioModeStatus"
-                        status.startsWith("Screen capture started") && lastAudioModeStatus.isNotBlank() ->
-                            "$status\n$lastAudioModeStatus"
-                        else -> status
-                    }
-                    if (
-                        status.contains("P2P connected") ||
-                        status.contains("Joined room") ||
-                        status == "Offer sent" ||
-                        status == "Casting"
-                    ) {
-                        isP2PReady = true
-                    }
-                    if (status.startsWith("P2P connected")) {
-                        currentScreen = AppScreen.SESSION
-                    }
-                    if (
-                        status.contains("connection failed", ignoreCase = true) ||
-                        status.contains("disconnected", ignoreCase = true) ||
-                        status.contains("removed from room", ignoreCase = true) ||
-                        status.contains("room closed", ignoreCase = true)
-                    ) {
-                        isP2PReady = false
-                    }
-                }
-            }
+            onStatusChange = ::handleWebRtcStatus
         )
         ActiveCastingSession.manager = webRtcManager
 
@@ -480,8 +497,49 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun handleWebRtcStatus(status: String) {
+        runOnUiThread {
+            if (status.startsWith("Audio mode:")) {
+                lastAudioModeStatus = status
+            }
+            statusText = when {
+                status == "Casting" && lastAudioModeStatus.isNotBlank() ->
+                    "Casting\n$lastAudioModeStatus"
+                status.startsWith("Screen capture started") && lastAudioModeStatus.isNotBlank() ->
+                    "$status\n$lastAudioModeStatus"
+                else -> status
+            }
+            if (
+                status.contains("P2P connected") ||
+                status.contains("Joined room") ||
+                status == "Offer sent" ||
+                status == "Casting"
+            ) {
+                isP2PReady = true
+            }
+            if (status.startsWith("P2P connected")) {
+                currentScreen = AppScreen.SESSION
+            }
+            if (status == "Screen capture stopped" || status == "Casting stopped") {
+                ActiveCastingSession.cancelCaptureStart()
+                isCasting = false
+                lastAudioModeStatus = ""
+                ScreenCaptureService.stop(this@MainActivity)
+            }
+            if (
+                status.contains("connection failed", ignoreCase = true) ||
+                status.contains("disconnected", ignoreCase = true) ||
+                status.contains("removed from room", ignoreCase = true) ||
+                status.contains("room closed", ignoreCase = true)
+            ) {
+                isP2PReady = false
+            }
+        }
+    }
+
     private fun leaveRoom() {
         SessionTraceRecorder.record(TAG, "Leave room requested")
+        ActiveCastingSession.cancelCaptureStart()
         webRtcManager?.stop()
         webRtcManager = null
         ActiveCastingSession.manager = null
@@ -494,10 +552,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (isCasting || webRtcManager?.isCasting == true) {
+        if (isCasting || webRtcManager?.isCasting == true || ActiveCastingSession.captureStartPending) {
             // Do not tear down an active cast when Android removes/recreates the UI task. The
             // foreground service and retained manager own the session until the user taps Stop.
-            android.util.Log.i(TAG, "Activity destroyed while casting; keeping session alive")
+            Log.i(
+                TAG,
+                "Activity destroyed during pending/active capture; keeping session alive " +
+                    "pending=${ActiveCastingSession.captureStartPending}"
+            )
         } else {
             webRtcManager?.stop()
             webRtcManager = null

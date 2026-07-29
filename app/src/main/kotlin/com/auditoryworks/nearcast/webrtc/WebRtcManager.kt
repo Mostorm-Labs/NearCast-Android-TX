@@ -5,6 +5,8 @@ import android.content.Intent
 import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import kotlinx.coroutines.CoroutineScope
@@ -58,7 +60,7 @@ private const val VIDEO_CAPTURE_FPS = 30
 class WebRtcManager(
     private val context: Context,
     val signalingClient: SignalingClient,
-    private val onStatusChange: (String) -> Unit
+    private var onStatusChange: (String) -> Unit
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -98,6 +100,11 @@ class WebRtcManager(
 
     var isCasting = false
         private set
+
+    /** Rebind UI updates when single-app projection recreates the launcher activity. */
+    fun setOnStatusChange(listener: (String) -> Unit) {
+        onStatusChange = listener
+    }
 
     private val rtcConfig = PeerConnection.RTCConfiguration(
         listOf(
@@ -279,22 +286,13 @@ class WebRtcManager(
     private fun createAndSendOffer() {
         if (isCleanupInProgress) return
         SessionTraceRecorder.record(TAG, "createAndSendOffer")
-        // Detect if an audio track already exists among the senders (Phase 2 — after addTrack).
+        // Detect if an audio track is currently attached (Phase 2 — after addTrack).
         // When it exists, omit OfferToReceiveAudio so WebRTC includes the m=audio
         // line with correct sendonly direction derived from the transceiver itself.
-        // Use a safe check for senders to avoid "RtpSender has been disposed"
-        val hasAudioSender = try {
-            peerConnection?.senders?.any { sender ->
-                try {
-                    sender.track() is AudioTrack
-                } catch (_: Exception) {
-                    false
-                }
-            } == true
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to check senders for audio track", e)
-            false
-        }
+        // Do not call PeerConnection.getSenders() here. The WebRTC Java wrapper disposes its
+        // previously returned RtpSender wrappers whenever getSenders() is called, which also
+        // invalidates the sender retained for stats and for the next capture session.
+        val hasAudioSender = audioSender != null && audioTrack != null
 
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
@@ -371,6 +369,10 @@ class WebRtcManager(
             Log.w(TAG, "startScreenCapture ignored: cleanup in progress")
             return
         }
+        if (isCasting) {
+            Log.i(TAG, "startScreenCapture ignored: capture is already active")
+            return
+        }
         SessionTraceRecorder.record(TAG, "startScreenCapture begin")
         // Reset audio injection debug counters
         injectionFrameCount = 0
@@ -382,7 +384,11 @@ class WebRtcManager(
                 override fun onStop() {
                     Log.d(TAG, "MediaProjection stopped by system")
                     SessionTraceRecorder.record(TAG, "MediaProjection stopped by system")
-                    onStatusChange("Screen capture stopped")
+                    Handler(Looper.getMainLooper()).post {
+                        if (isCasting && !isCleanupInProgress) {
+                            stopScreenCaptureInternal(stoppedBySystem = true)
+                        }
+                    }
                 }
             })
 
@@ -452,8 +458,18 @@ class WebRtcManager(
             // Stream ID is critical: the receiver uses it to group tracks into a MediaStream
             // and bind it to the video player. Without it, ontrack.streams may be empty.
             val streamId = listOf("screen-share")
-            videoSender = videoTrack?.let { peerConnection?.addTrack(it, streamId) }
-            audioSender = audioTrack?.let { peerConnection?.addTrack(it, streamId) }
+            val currentVideoTrack = checkNotNull(videoTrack)
+            val currentAudioTrack = checkNotNull(audioTrack)
+            videoSender = videoSender?.also { sender ->
+                check(sender.setTrack(currentVideoTrack, false)) {
+                    "Failed to attach the new video track to the existing sender"
+                }
+            } ?: peerConnection?.addTrack(currentVideoTrack, streamId)
+            audioSender = audioSender?.also { sender ->
+                check(sender.setTrack(currentAudioTrack, false)) {
+                    "Failed to attach the new audio track to the existing sender"
+                }
+            } ?: peerConnection?.addTrack(currentAudioTrack, streamId)
             Log.d(
                 TAG,
                 "Tracks added to PeerConnection with streamId=$streamId " +
@@ -481,7 +497,14 @@ class WebRtcManager(
     }
 
     fun stopScreenCapture() {
+        stopScreenCaptureInternal(stoppedBySystem = false)
+    }
+
+    private fun stopScreenCaptureInternal(stoppedBySystem: Boolean) {
         SessionTraceRecorder.record(TAG, "stopScreenCapture")
+        // Set this before stopping the capturer because stopCapture() invokes MediaProjection.onStop.
+        // The callback must not enter this cleanup routine a second time.
+        isCasting = false
         stopVideoStatsPolling()
         try { screenCapturer?.stopCapture() } catch (_: Exception) {}
         try { screenCapturer?.dispose() } catch (_: Exception) {}
@@ -489,20 +512,20 @@ class WebRtcManager(
         systemAudioCapture?.stop()
         systemAudioCapture = null
 
-        peerConnection?.senders?.forEach { sender ->
-            try {
-                peerConnection?.removeTrack(sender)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to remove track from sender: ${e.message}")
-            }
+        // Keep the same RTP senders/transceivers across repeated capture sessions.
+        // removeTrack()+addTrack() grows Unified Plan SDP with inactive m-lines, and querying
+        // PeerConnection.senders disposes the retained Java RtpSender wrapper.
+        try { videoSender?.setTrack(null, false) } catch (e: Exception) {
+            Log.w(TAG, "Failed to detach video track: ${e.message}")
+        }
+        try { audioSender?.setTrack(null, false) } catch (e: Exception) {
+            Log.w(TAG, "Failed to detach audio track: ${e.message}")
         }
 
         try { videoTrack?.dispose() } catch (_: Exception) {}
         videoTrack = null
         try { audioTrack?.dispose() } catch (_: Exception) {}
         audioTrack = null
-        videoSender = null
-        audioSender = null
         try { videoSource?.dispose() } catch (_: Exception) {}
         videoSource = null
         try { audioSource?.dispose() } catch (_: Exception) {}
@@ -510,11 +533,11 @@ class WebRtcManager(
         try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
         surfaceTextureHelper = null
 
-        isCasting = false
         restoreLocalPlaybackAfterCasting()
         lastRemoteAnswerSdp = null
-        onStatusChange("Casting stopped")
-        SessionTraceRecorder.record(TAG, "casting stopped")
+        val status = if (stoppedBySystem) "Screen capture stopped" else "Casting stopped"
+        onStatusChange(status)
+        SessionTraceRecorder.record(TAG, status.lowercase())
 
         createAndSendOffer()
     }
@@ -774,19 +797,8 @@ class WebRtcManager(
                         "sender.track=$trackId, " +
                         "receiver.track=$receiverTrackId")
             }
-            val audioSenders = try {
-                pc.senders.filter { sender ->
-                    try { sender.track() is AudioTrack } catch (_: Exception) { false }
-                }
-            } catch (e: Exception) {
-                emptyList()
-            }
-            Log.d(TAG, "Audio senders count: ${audioSenders.size}")
-            audioSenders.forEach { sender ->
-                val trackId = try { sender.track()?.id() } catch (_: Exception) { "disposed" }
-                Log.d(TAG, "  AudioSender: trackId=$trackId")
-            }
-            Log.d(TAG, "Audio senders: ${audioSenders.size}")
+            val audioSenderTrackId = try { audioSender?.track()?.id() } catch (_: Exception) { "disposed" }
+            Log.d(TAG, "Audio sender trackId=${audioSenderTrackId ?: "none"}")
             Log.d(TAG, "AudioRecordDataCallback count: $audioDataCallbackCount")
             Log.d(TAG, "Audio injection frames: $injectionFrameCount")
             Log.d(TAG, "Audio empty callbacks: $emptyInjectionCount")
