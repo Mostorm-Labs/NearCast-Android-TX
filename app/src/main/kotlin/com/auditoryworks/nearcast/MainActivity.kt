@@ -1,6 +1,7 @@
 package com.auditoryworks.nearcast
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
@@ -30,10 +31,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.auditoryworks.nearcast.diagnostics.LogUploadManager
 import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import com.auditoryworks.nearcast.service.ScreenCaptureService
+import com.auditoryworks.nearcast.session.CastSessionState
+import com.auditoryworks.nearcast.session.CaptureState
 import com.auditoryworks.nearcast.ui.screens.HomeScreen
 import com.auditoryworks.nearcast.ui.screens.LogUploadDialog
 import com.auditoryworks.nearcast.ui.screens.SessionScreen
@@ -44,12 +49,13 @@ import com.auditoryworks.nearcast.webrtc.NearHubEvent
 import com.auditoryworks.nearcast.webrtc.NearHubSignalingClient
 import com.auditoryworks.nearcast.webrtc.SignalingClient
 import com.auditoryworks.nearcast.webrtc.WebRtcManager
-import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 enum class AppScreen { HOME, SESSION }
 
 /** Keeps the active WebRTC session alive while the UI task is removed or recreated. */
+@SuppressLint("StaticFieldLeak")
 private object ActiveCastingSession {
     var manager: WebRtcManager? = null
     var captureStartPending: Boolean = false
@@ -86,9 +92,9 @@ class MainActivity : ComponentActivity() {
     private var statusText by mutableStateOf("Ready")
     private val serverUrl = "https://cast.nearhub.us/"
     private var pairCode by mutableStateOf("")
-    private var isCasting by mutableStateOf(false)
-    private var isP2PReady by mutableStateOf(false)
+    private var sessionState by mutableStateOf(CastSessionState())
     private var lastAudioModeStatus by mutableStateOf("")
+    private var sessionStateJob: Job? = null
     private var showLogUploadDialog by mutableStateOf(false)
     private var isLogUploadInProgress by mutableStateOf(false)
 
@@ -103,17 +109,13 @@ class MainActivity : ComponentActivity() {
 
         // A foreground service keeps the process alive after the task is swiped away. Restore the
         // in-process manager when the launcher UI is opened again.
-        webRtcManager = ActiveCastingSession.manager
-        webRtcManager?.setOnStatusChange(::handleWebRtcStatus)
-        if (webRtcManager?.isCasting == true || ActiveCastingSession.captureStartPending) {
+        bindWebRtcManager(ActiveCastingSession.manager)
+        if (webRtcManager != null || ActiveCastingSession.captureStartPending) {
             currentScreen = AppScreen.SESSION
-            isCasting = true
-            isP2PReady = webRtcManager?.isDataChannelOpen == true
-            statusText = if (webRtcManager?.isCasting == true) {
-                "Casting"
-            } else {
-                "Starting screen capture..."
-            }
+            sessionState = webRtcManager?.sessionState?.value ?: CastSessionState(
+                capture = CaptureState.STARTING
+            )
+            statusText = "Restored casting session"
         }
 
         lifecycleScope.launch {
@@ -128,7 +130,6 @@ class MainActivity : ComponentActivity() {
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                         val data = result.data!!
                         val captureRequestId = ActiveCastingSession.beginCaptureStart()
-                        isCasting = true
                         statusText = "Starting screen capture..."
                         Log.i(TAG, "MediaProjection permission granted requestId=$captureRequestId")
                         // 1. Start foreground service immediately after permission granted.
@@ -152,13 +153,14 @@ class MainActivity : ComponentActivity() {
                                 if (!manager.isCasting) {
                                     manager.startScreenCapture(data)
                                 }
-                                isCasting = true
                                 SessionTraceRecorder.record(TAG, "Screen capture started")
                             } catch (e: Exception) {
                                 val readableError = e.readableMessage()
-                                isCasting = false
                                 statusText = "Screen capture failed: $readableError"
-                                ScreenCaptureService.stop(this@MainActivity)
+                                val manager = ActiveCastingSession.manager
+                                if (manager == null || !manager.sessionState.value.shouldKeepForegroundService) {
+                                    ScreenCaptureService.stop(this@MainActivity)
+                                }
                                 SessionTraceRecorder.record(TAG, "Screen capture failed: $readableError")
                             } finally {
                                 ActiveCastingSession.finishCaptureStart(captureRequestId)
@@ -166,8 +168,8 @@ class MainActivity : ComponentActivity() {
                         }, 800)
                     } else {
                         ActiveCastingSession.cancelCaptureStart()
-                        isCasting = false
-                        statusText = "Screen capture permission denied"
+                        ActiveCastingSession.manager?.markCapturePermissionDenied()
+                            ?: run { statusText = "Screen capture permission denied" }
                     }
                 }
                 val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
@@ -176,6 +178,7 @@ class MainActivity : ComponentActivity() {
                     if (granted) {
                         launchScreenCapture(mediaProjectionLauncher)
                     } else {
+                        ActiveCastingSession.manager?.markCapturePermissionDenied()
                         statusText = "Audio capture permission denied, cannot cast playback audio"
                     }
                 }
@@ -206,8 +209,7 @@ class MainActivity : ComponentActivity() {
 
                     AppScreen.SESSION -> SessionScreen(
                         statusText = statusText,
-                        isCasting = isCasting,
-                        isP2PReady = isP2PReady,
+                        sessionState = sessionState,
                         isLogUploadInProgress = isLogUploadInProgress,
                         isUpdateDownloadInProgress = isDownloadingUpdate,
                         isDownloadProgressVisible = isDownloadProgressVisible,
@@ -222,8 +224,6 @@ class MainActivity : ComponentActivity() {
                             SessionTraceRecorder.record(TAG, "Stop cast requested from UI")
                             ActiveCastingSession.cancelCaptureStart()
                             webRtcManager?.stopScreenCapture()
-                            ScreenCaptureService.stop(this@MainActivity)
-                            isCasting = false
                         },
                         onLeave = { leaveRoom() },
                         onUploadLogs = {
@@ -386,8 +386,33 @@ class MainActivity : ComponentActivity() {
     private fun launchScreenCapture(
         mediaProjectionLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
     ) {
+        ActiveCastingSession.manager?.markCapturePermissionRequested()
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
+    }
+
+    private fun bindWebRtcManager(manager: WebRtcManager?) {
+        sessionStateJob?.cancel()
+        webRtcManager = manager
+        sessionState = manager?.sessionState?.value ?: CastSessionState()
+        manager?.setOnStatusChange(::handleWebRtcStatus)
+        if (manager == null) return
+
+        sessionStateJob = lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                manager.sessionState.collect { state ->
+                    sessionState = state
+                    if (state.transport != com.auditoryworks.nearcast.session.TransportState.IDLE &&
+                        state.transport != com.auditoryworks.nearcast.session.TransportState.CLOSED
+                    ) {
+                        currentScreen = AppScreen.SESSION
+                    }
+                    if (state.capture == CaptureState.AWAITING_RESELECTION) {
+                        currentScreen = AppScreen.SESSION
+                    }
+                }
+            }
+        }
     }
 
     private fun uploadLogs(email: String, description: String) {
@@ -465,23 +490,23 @@ class MainActivity : ComponentActivity() {
             onStatusChange = { status -> runOnUiThread { statusText = status } }
         )
 
-        webRtcManager = WebRtcManager(
+        val manager = WebRtcManager(
             context = applicationContext,
             signalingClient = signalingClient,
             onStatusChange = ::handleWebRtcStatus
         )
-        ActiveCastingSession.manager = webRtcManager
+        bindWebRtcManager(manager)
+        ActiveCastingSession.manager = manager
 
         signalingClient.connect()
 
-        MainScope().launch {
+        lifecycleScope.launch {
             signalingClient.events.collect { event ->
                 when (event) {
                     is NearHubEvent.Connected -> {
                         signalingClient.join(effectivePairCode, "Android-${Build.MODEL}")
                     }
                     is NearHubEvent.Joined -> {
-                        isP2PReady = true
                         currentScreen = AppScreen.SESSION
                     }
                     is NearHubEvent.JoinFailed -> {
@@ -509,30 +534,19 @@ class MainActivity : ComponentActivity() {
                     "$status\n$lastAudioModeStatus"
                 else -> status
             }
-            if (
-                status.contains("P2P connected") ||
-                status.contains("Joined room") ||
-                status == "Offer sent" ||
-                status == "Casting"
+
+            if (webRtcManager?.sessionState?.value?.transport ==
+                com.auditoryworks.nearcast.session.TransportState.CONNECTED
             ) {
-                isP2PReady = true
-            }
-            if (status.startsWith("P2P connected")) {
                 currentScreen = AppScreen.SESSION
             }
-            if (status == "Screen capture stopped" || status == "Casting stopped") {
-                ActiveCastingSession.cancelCaptureStart()
-                isCasting = false
-                lastAudioModeStatus = ""
-                ScreenCaptureService.stop(this@MainActivity)
-            }
             if (
-                status.contains("connection failed", ignoreCase = true) ||
-                status.contains("disconnected", ignoreCase = true) ||
                 status.contains("removed from room", ignoreCase = true) ||
                 status.contains("room closed", ignoreCase = true)
             ) {
-                isP2PReady = false
+                sessionState = CastSessionState()
+                lastAudioModeStatus = ""
+                ScreenCaptureService.stop(this@MainActivity)
             }
         }
     }
@@ -541,26 +555,32 @@ class MainActivity : ComponentActivity() {
         SessionTraceRecorder.record(TAG, "Leave room requested")
         ActiveCastingSession.cancelCaptureStart()
         webRtcManager?.stop()
+        sessionStateJob?.cancel()
+        sessionStateJob = null
         webRtcManager = null
         ActiveCastingSession.manager = null
         ScreenCaptureService.stop(this)
-        isCasting = false
-        isP2PReady = false
+        sessionState = CastSessionState()
         lastAudioModeStatus = ""
         currentScreen = AppScreen.HOME
         statusText = "Ready"
     }
 
     override fun onDestroy() {
-        if (isCasting || webRtcManager?.isCasting == true || ActiveCastingSession.captureStartPending) {
+        if (sessionState.shouldKeepForegroundService ||
+            webRtcManager?.sessionState?.value?.shouldKeepForegroundService == true ||
+            ActiveCastingSession.captureStartPending
+        ) {
             // Do not tear down an active cast when Android removes/recreates the UI task. The
             // foreground service and retained manager own the session until the user taps Stop.
+            webRtcManager?.clearOnStatusChange()
             Log.i(
                 TAG,
                 "Activity destroyed during pending/active capture; keeping session alive " +
                     "pending=${ActiveCastingSession.captureStartPending}"
             )
         } else {
+            sessionStateJob?.cancel()
             webRtcManager?.stop()
             webRtcManager = null
             ActiveCastingSession.manager = null

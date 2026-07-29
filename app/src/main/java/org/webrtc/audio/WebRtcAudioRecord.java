@@ -13,6 +13,7 @@
 
 package org.webrtc.audio;
 
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.media.AudioDeviceInfo;
@@ -525,6 +526,7 @@ class WebRtcAudioRecord {
   }
 
   @TargetApi(Build.VERSION_CODES.M)
+  @SuppressLint("MissingPermission")
   private static AudioRecord createAudioRecordOnMOrHigher(
     int audioSource, int sampleRate, int channelConfig, int audioFormat, int bufferSizeInBytes) {
     Logging.d(TAG, "createAudioRecordOnMOrHigher");
@@ -539,6 +541,7 @@ class WebRtcAudioRecord {
       .build();
   }
 
+  @SuppressLint("MissingPermission")
   private static AudioRecord createAudioRecordOnLowerThanM(
     int audioSource, int sampleRate, int channelConfig, int audioFormat, int bufferSizeInBytes) {
     Logging.d(TAG, "createAudioRecordOnLowerThanM");

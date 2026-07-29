@@ -23,6 +23,7 @@ private const val AUDIO_CAPTURE_TAG = "SystemAudioCapture"
  */
 class SystemAudioCapture(private val context: Context) {
     private val lock = Any()
+    private val lifecycleLock = Any()
     private val queue = ArrayDeque<ByteArray>()
     // Pool of pre-allocated buffers to avoid per-frame clone() allocations.
     private val bufferPool = ArrayBlockingQueue<ByteArray>(16)
@@ -41,113 +42,123 @@ class SystemAudioCapture(private val context: Context) {
         sampleRate: Int,
         channelCount: Int
     ): Boolean {
-        SessionTraceRecorder.record(
-            AUDIO_CAPTURE_TAG,
-            "start requested sampleRate=$sampleRate channelCount=$channelCount"
-        )
-        lastError = null
-        if (!isSupported()) return false
-        val hasRecordAudioPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-        if (!hasRecordAudioPermission) {
-            Log.w(AUDIO_CAPTURE_TAG, "RECORD_AUDIO permission not granted")
-            lastError = "RECORD_AUDIO permission not granted"
-            return false
-        }
-        stop()
-        return try {
-            val channelMask = if (channelCount == 2) {
-                AudioFormat.CHANNEL_IN_STEREO
-            } else {
-                AudioFormat.CHANNEL_IN_MONO
-            }
-            val audioFormat = AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(sampleRate)
-                .setChannelMask(channelMask)
-                .build()
-
-            val captureConfig = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .build()
-
-            val minBuffer = AudioRecord.getMinBufferSize(
-                sampleRate,
-                channelMask,
-                AudioFormat.ENCODING_PCM_16BIT
+        synchronized(lifecycleLock) {
+            SessionTraceRecorder.record(
+                AUDIO_CAPTURE_TAG,
+                "start requested sampleRate=$sampleRate channelCount=$channelCount"
             )
-            val targetBuffer = (sampleRate * channelCount * 2 / 100).coerceAtLeast(minBuffer * 2)
-
-            audioRecord = AudioRecord.Builder()
-                .setAudioPlaybackCaptureConfig(captureConfig)
-                .setAudioFormat(audioFormat)
-                .setBufferSizeInBytes(targetBuffer)
-                .build()
-
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(AUDIO_CAPTURE_TAG, "AudioRecord not initialized")
-                lastError = "AudioRecord init failed"
-                SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "AudioRecord init failed")
-                stop()
+            lastError = null
+            // A restart always tears down the previous reader first, even if the new request is
+            // rejected by an SDK or permission check.
+            stopLocked()
+            if (!isSupported()) return false
+            val hasRecordAudioPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasRecordAudioPermission) {
+                Log.w(AUDIO_CAPTURE_TAG, "RECORD_AUDIO permission not granted")
+                lastError = "RECORD_AUDIO permission not granted"
                 return false
             }
 
-            audioRecord?.startRecording()
-            if (audioRecord?.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                Log.e(AUDIO_CAPTURE_TAG, "AudioRecord startRecording failed")
-                lastError = "AudioRecord start failed"
-                SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "AudioRecord start failed")
-                stop()
-                return false
-            }
+            return try {
+                val channelMask = if (channelCount == 2) {
+                    AudioFormat.CHANNEL_IN_STEREO
+                } else {
+                    AudioFormat.CHANNEL_IN_MONO
+                }
+                val audioFormat = AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(channelMask)
+                    .build()
 
-            running = true
-            val frameBytes = sampleRate * channelCount * 2 / 100 // 10ms
-            // Pre-fill the pool with reusable buffers.
-            repeat(14) { bufferPool.offer(ByteArray(frameBytes)) }
-            readerThread = Thread({
-                val localBuffer = ByteArray(frameBytes)
-                while (running) {
-                    val bytesRead = audioRecord?.read(localBuffer, 0, localBuffer.size) ?: 0
-                    if (bytesRead > 0) {
-                        // Acquire a buffer from the pool; fall back to allocation only if pool is empty.
-                        val chunk = bufferPool.poll() ?: ByteArray(frameBytes)
-                        System.arraycopy(localBuffer, 0, chunk, 0, bytesRead)
-                        if (bytesRead < frameBytes) {
-                            chunk.fill(0, bytesRead, frameBytes)
-                        }
-                        synchronized(lock) {
-                            if (queue.size >= 12) {
-                                // Return the evicted buffer to the pool instead of discarding it.
-                                bufferPool.offer(queue.removeFirst())
+                val captureConfig = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                    .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                    .build()
+
+                val minBuffer = AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    channelMask,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                val targetBuffer = (sampleRate * channelCount * 2 / 100)
+                    .coerceAtLeast(minBuffer * 2)
+
+                val record = AudioRecord.Builder()
+                    .setAudioPlaybackCaptureConfig(captureConfig)
+                    .setAudioFormat(audioFormat)
+                    .setBufferSizeInBytes(targetBuffer)
+                    .build()
+
+                if (record.state != AudioRecord.STATE_INITIALIZED) {
+                    Log.e(AUDIO_CAPTURE_TAG, "AudioRecord not initialized")
+                    lastError = "AudioRecord init failed"
+                    SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "AudioRecord init failed")
+                    record.release()
+                    return false
+                }
+
+                record.startRecording()
+                if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    Log.e(AUDIO_CAPTURE_TAG, "AudioRecord startRecording failed")
+                    lastError = "AudioRecord start failed"
+                    SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "AudioRecord start failed")
+                    record.release()
+                    return false
+                }
+
+                audioRecord = record
+                running = true
+                val frameBytes = sampleRate * channelCount * 2 / 100 // 10ms
+                // Pre-fill the pool with reusable buffers.
+                repeat(14) { bufferPool.offer(ByteArray(frameBytes)) }
+                readerThread = Thread({
+                    val localBuffer = ByteArray(frameBytes)
+                    // Keep a stable reference. A restart must never make an old reader consume
+                    // from the newly-created AudioRecord stored in the field.
+                    while (running) {
+                        val bytesRead = record.read(localBuffer, 0, localBuffer.size)
+                        if (bytesRead > 0 && running) {
+                            // Acquire a buffer from the pool; fall back to allocation only if
+                            // the pool is empty.
+                            val chunk = bufferPool.poll() ?: ByteArray(frameBytes)
+                            System.arraycopy(localBuffer, 0, chunk, 0, bytesRead)
+                            if (bytesRead < frameBytes) {
+                                chunk.fill(0, bytesRead, frameBytes)
                             }
-                            queue.addLast(chunk)
+                            synchronized(lock) {
+                                if (queue.size >= 12) {
+                                    // Return the evicted buffer to the pool instead of discarding it.
+                                    bufferPool.offer(queue.removeFirst())
+                                }
+                                queue.addLast(chunk)
+                            }
                         }
                     }
-                }
-            }, "SystemAudioCaptureReader").apply { start() }
+                }, "SystemAudioCaptureReader").apply { start() }
 
-            Log.d(
-                AUDIO_CAPTURE_TAG,
-                "System audio capture started, sampleRate=$sampleRate, channelCount=$channelCount"
-            )
-            SessionTraceRecorder.record(
-                AUDIO_CAPTURE_TAG,
-                "capture started sampleRate=$sampleRate channelCount=$channelCount"
-            )
-            true
-        } catch (e: Exception) {
-            Log.e(AUDIO_CAPTURE_TAG, "Failed to start system audio capture", e)
-            lastError = e.message ?: e.javaClass.simpleName
-            SessionTraceRecorder.record(
-                AUDIO_CAPTURE_TAG,
-                "capture failed: ${e.message ?: e.javaClass.simpleName}"
-            )
-            stop()
-            false
+                Log.d(
+                    AUDIO_CAPTURE_TAG,
+                    "System audio capture started, sampleRate=$sampleRate, channelCount=$channelCount"
+                )
+                SessionTraceRecorder.record(
+                    AUDIO_CAPTURE_TAG,
+                    "capture started sampleRate=$sampleRate channelCount=$channelCount"
+                )
+                true
+            } catch (e: Exception) {
+                Log.e(AUDIO_CAPTURE_TAG, "Failed to start system audio capture", e)
+                lastError = e.message ?: e.javaClass.simpleName
+                SessionTraceRecorder.record(
+                    AUDIO_CAPTURE_TAG,
+                    "capture failed: ${e.message ?: e.javaClass.simpleName}"
+                )
+                stopLocked()
+                false
+            }
         }
     }
 
@@ -168,23 +179,39 @@ class SystemAudioCapture(private val context: Context) {
     }
 
     fun stop() {
+        synchronized(lifecycleLock) {
+            stopLocked()
+        }
+    }
+
+    private fun stopLocked() {
         SessionTraceRecorder.record(AUDIO_CAPTURE_TAG, "stop requested")
         running = false
+
+        val record = audioRecord
+        // Stop before joining: AudioRecord.read() is blocking on several OEMs and otherwise can
+        // outlive the 300ms join window while a new capture is being started.
         try {
-            readerThread?.join(300)
+            record?.stop()
         } catch (_: Exception) {}
+
+        val thread = readerThread
+        try {
+            thread?.join(1_000)
+        } catch (_: Exception) {}
+        if (thread?.isAlive == true) {
+            thread.interrupt()
+        }
         readerThread = null
+        audioRecord = null
 
         synchronized(lock) {
             queue.clear()
         }
         bufferPool.clear()
-
         try {
-            audioRecord?.stop()
+            record?.release()
         } catch (_: Exception) {}
-        audioRecord?.release()
-        audioRecord = null
 
         // MediaProjection is shared with ScreenCapturerAndroid and owned by that capturer.
         // Stopping it here would also terminate screen capture.

@@ -6,14 +6,25 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.AudioManager
 import android.media.projection.MediaProjection
+import android.app.KeyguardManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.Surface
+import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
+import com.auditoryworks.nearcast.service.ScreenCaptureService
+import com.auditoryworks.nearcast.session.CaptureState
+import com.auditoryworks.nearcast.session.CastSessionEvent
+import com.auditoryworks.nearcast.session.CastSessionState
+import com.auditoryworks.nearcast.session.ProjectionStopReason
+import com.auditoryworks.nearcast.session.StatusFrameMessage
+import com.auditoryworks.nearcast.session.TransportState
+import com.auditoryworks.nearcast.session.reduce
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,9 +33,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
+import org.webrtc.CapturerObserver
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -46,6 +61,7 @@ import org.webrtc.SurfaceTextureHelper
 import org.webrtc.ThreadUtils
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
+import org.webrtc.VideoFrame
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 
@@ -91,6 +107,8 @@ class WebRtcManager(
     private var systemAudioCapture: SystemAudioCapture? = null
     private var lastRemoteAnswerSdp: String? = null
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    private val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
     private var mutedLocalPlaybackForCasting = false
     private var videoStatsPollingJob: Job? = null
     private var videoStatsSnapshotCount = 0
@@ -104,6 +122,46 @@ class WebRtcManager(
     private var pendingCaptureWidth = 0
     private var pendingCaptureHeight = 0
     private var pendingCaptureReason = ""
+    private var lastCaptureWidth = 0
+    private var lastCaptureHeight = 0
+    private var captureGeneration = 0L
+    @Volatile
+    private var activeCaptureGeneration = 0L
+
+    @Volatile
+    private var downstreamCapturerObserver: CapturerObserver? = null
+    private var downstreamCaptureStarted = false
+
+    @Volatile
+    private var forwardRealCaptureFrames = false
+
+    private val switchingCapturerObserver = object : CapturerObserver {
+        override fun onCapturerStarted(success: Boolean) {
+            val observer = synchronized(captureResizeLock) {
+                if (downstreamCaptureStarted) return
+                if (success) downstreamCaptureStarted = true
+                downstreamCapturerObserver
+            }
+            observer?.onCapturerStarted(success)
+            SessionTraceRecorder.record(TAG, "capture observer started success=$success")
+        }
+
+        override fun onCapturerStopped() {
+            // MediaProjection may stop while the same VideoSource continues with a synthetic
+            // status frame. The manager forwards the final stop only for an explicit media stop.
+            SessionTraceRecorder.record(TAG, "physical capturer stopped; source retained")
+        }
+
+        override fun onFrameCaptured(frame: VideoFrame) {
+            if (forwardRealCaptureFrames) {
+                downstreamCapturerObserver?.onFrameCaptured(frame)
+            }
+        }
+    }
+
+    private val statusVideoFrameProducer = StatusVideoFrameProducer(scope) {
+        downstreamCapturerObserver
+    }
 
     @Volatile
     private var receivedCapturedContentSize = false
@@ -137,12 +195,72 @@ class WebRtcManager(
     @Volatile
     private var isCleanupInProgress = false
 
-    var isCasting = false
-        private set
+    private val _sessionState = MutableStateFlow(CastSessionState())
+    val sessionState: StateFlow<CastSessionState> = _sessionState.asStateFlow()
+
+    val isP2PConnected: Boolean
+        get() = _sessionState.value.isP2PReady
+
+    val isCaptureContentVisible: Boolean
+        get() = _sessionState.value.isContentVisible
+
+    val isCasting: Boolean
+        get() = _sessionState.value.isProjectionActive
 
     /** Rebind UI updates when single-app projection recreates the launcher activity. */
     fun setOnStatusChange(listener: (String) -> Unit) {
         onStatusChange = listener
+    }
+
+    /** Drop the Activity-bound callback while the launcher task is gone. */
+    fun clearOnStatusChange() {
+        onStatusChange = {}
+    }
+
+    /** Called before launching the system MediaProjection consent dialog. */
+    fun markCapturePermissionRequested() {
+        dispatch(CastSessionEvent.CapturePermissionRequested)
+        onStatusChange("Waiting for screen sharing permission...")
+    }
+
+    /** Called when the user dismisses or denies the system MediaProjection consent dialog. */
+    fun markCapturePermissionDenied() {
+        dispatch(CastSessionEvent.CapturePermissionDenied)
+        if (_sessionState.value.statusFrameMessage != null) {
+            startStatusFrameForCurrentState()
+        }
+        onStatusChange("Screen capture permission denied")
+    }
+
+    private fun currentCastingStatus(): String {
+        val state = _sessionState.value
+        return when {
+            state.capture == CaptureState.PAUSED_HIDDEN ->
+                "Screen capture paused: shared content is hidden"
+            state.capture == CaptureState.AWAITING_RESELECTION ->
+                "Screen capture stopped: shared content must be reselected"
+            state.capture == CaptureState.STARTING -> "Starting screen capture..."
+            state.capture == CaptureState.ACTIVE && state.isP2PReady -> "Casting"
+            state.capture == CaptureState.ACTIVE ->
+                "Screen capture active, waiting for receiver..."
+            state.isP2PReady -> "P2P connected, ready to cast"
+            else -> "Establishing P2P connection..."
+        }
+    }
+
+    private fun dispatch(event: CastSessionEvent) {
+        val previous = _sessionState.value
+        val next = previous.reduce(event)
+        if (next == previous) return
+        _sessionState.value = next
+        SessionTraceRecorder.record(
+            TAG,
+            "session state transport=${previous.transport}->${next.transport} " +
+                "capture=${previous.capture}->${next.capture} reason=${next.stopReason}"
+        )
+        if (next.shouldKeepForegroundService) {
+            ScreenCaptureService.update(context, next)
+        }
     }
 
     private val rtcConfig = PeerConnection.RTCConfiguration(
@@ -188,6 +306,7 @@ class WebRtcManager(
                 when (event) {
                     is NearHubEvent.Joined -> {
                         SessionTraceRecorder.record(TAG, "signaling joined roomId=${event.roomId} userId=${event.userId}")
+                        dispatch(CastSessionEvent.TransportChanged(TransportState.CONNECTING))
                         onStatusChange("Joined room, establishing P2P...")
                         connectP2P()
                     }
@@ -203,16 +322,19 @@ class WebRtcManager(
                     }
                     is NearHubEvent.PeerLeave -> {
                         SessionTraceRecorder.record(TAG, "peer left")
+                        dispatch(CastSessionEvent.SessionClosed)
                         onStatusChange("Removed from room")
                         cleanupP2P()
                     }
                     is NearHubEvent.RoomClosed -> {
                         SessionTraceRecorder.record(TAG, "room closed")
+                        dispatch(CastSessionEvent.SessionClosed)
                         onStatusChange("Room closed")
                         cleanupP2P()
                     }
                     is NearHubEvent.ServerError -> {
                         SessionTraceRecorder.record(TAG, "server error: ${event.message}")
+                        dispatch(CastSessionEvent.TransportChanged(TransportState.FAILED))
                         onStatusChange("Server error: ${event.message}")
                     }
                     else -> {}
@@ -290,6 +412,7 @@ class WebRtcManager(
 
     private fun setupPeerConnection() {
         peerConnection?.close()
+        dispatch(CastSessionEvent.TransportChanged(TransportState.CONNECTING))
 
         peerConnection = peerConnectionFactory.createPeerConnection(
             rtcConfig, createPeerConnectionObserver()
@@ -308,7 +431,9 @@ class WebRtcManager(
                 Log.d(TAG, "DataChannel state: $state")
                 SessionTraceRecorder.record(TAG, "DataChannel state=$state")
                 if (isDataChannelOpen) {
-                    onStatusChange("P2P connected, ready to cast")
+                    // DataChannel.OPEN is useful for signaling, but ICE is the authoritative
+                    // transport state for whether media can actually reach the receiver.
+                    onStatusChange(currentCastingStatus())
                 }
             }
 
@@ -457,7 +582,14 @@ class WebRtcManager(
         }
 
         synchronized(captureResizeLock) {
-            if (isCleanupInProgress || (width == captureWidth && height == captureHeight)) return
+            val captureState = _sessionState.value.capture
+            if (isCleanupInProgress || activeCaptureGeneration == 0L ||
+                captureState !in setOf(
+                    CaptureState.STARTING,
+                    CaptureState.ACTIVE,
+                    CaptureState.PAUSED_HIDDEN
+                ) || (width == captureWidth && height == captureHeight)
+            ) return
             if (!isCaptureFormatReady) {
                 pendingCaptureWidth = width
                 pendingCaptureHeight = height
@@ -473,6 +605,8 @@ class WebRtcManager(
                 source.adaptOutputFormat(width, height, VIDEO_CAPTURE_FPS)
                 captureWidth = width
                 captureHeight = height
+                lastCaptureWidth = width
+                lastCaptureHeight = height
                 Log.i(TAG, "Screen capture resized to ${width}x${height}@${VIDEO_CAPTURE_FPS}fps ($reason)")
                 SessionTraceRecorder.record(
                     TAG,
@@ -541,25 +675,32 @@ class WebRtcManager(
             Log.w(TAG, "startScreenCapture ignored: cleanup in progress")
             return
         }
-        if (isCasting) {
-            Log.i(TAG, "startScreenCapture ignored: capture is already active")
+        if (_sessionState.value.capture == CaptureState.ACTIVE ||
+            _sessionState.value.capture == CaptureState.PAUSED_HIDDEN ||
+            _sessionState.value.capture == CaptureState.STARTING
+        ) {
+            Log.i(TAG, "startScreenCapture ignored: capture is already active or starting")
             return
         }
-        SessionTraceRecorder.record(TAG, "startScreenCapture begin")
-        // Reset audio injection debug counters
+
+        val wasAwaitingReselection = _sessionState.value.requiresReselection
+        dispatch(CastSessionEvent.CaptureStarting)
+        SessionTraceRecorder.record(TAG, "startScreenCapture begin reselect=$wasAwaitingReselection")
         injectionFrameCount = 0
         emptyInjectionCount = 0
         audioDataCallbackCount = 0
         receivedCapturedContentSize = false
 
+        val generation = ++captureGeneration
+        activeCaptureGeneration = generation
         try {
             val capturer = ScreenCapturerAndroid(data, object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.d(TAG, "MediaProjection stopped by system")
                     SessionTraceRecorder.record(TAG, "MediaProjection stopped by system")
                     Handler(Looper.getMainLooper()).post {
-                        if (isCasting && !isCleanupInProgress) {
-                            stopScreenCaptureInternal(stoppedBySystem = true)
+                        if (generation == activeCaptureGeneration && !isCleanupInProgress) {
+                            handleProjectionStopped(generation)
                         }
                     }
                 }
@@ -569,22 +710,39 @@ class WebRtcManager(
                     receivedCapturedContentSize = true
                     updateScreenCaptureSize(width, height, "captured content changed")
                 }
+
+                override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+                    Log.i(TAG, "Captured content visibility changed: visible=$isVisible")
+                    SessionTraceRecorder.record(
+                        TAG,
+                        "captured content visibility visible=$isVisible"
+                    )
+                    Handler(Looper.getMainLooper()).post {
+                        if (generation != activeCaptureGeneration || isCleanupInProgress) return@post
+                        handleCapturedContentVisibilityChanged(isVisible)
+                    }
+                }
             })
             synchronized(captureResizeLock) {
                 screenCapturer = capturer
             }
 
-            surfaceTextureHelper = SurfaceTextureHelper.create(
-                "CaptureThread", eglBase.eglBaseContext
-            )
+            val helper = SurfaceTextureHelper.create("CaptureThread", eglBase.eglBaseContext)
+            surfaceTextureHelper = helper
 
-            val source = peerConnectionFactory.createVideoSource(true)
-            videoSource = source
-            capturer.initialize(surfaceTextureHelper, context, source.capturerObserver)
+            val source = videoSource ?: peerConnectionFactory.createVideoSource(true).also {
+                videoSource = it
+                downstreamCapturerObserver = it.capturerObserver
+                downstreamCaptureStarted = false
+            }
+            capturer.initialize(helper, context, switchingCapturerObserver)
+
             val (width, height) = readDefaultDisplaySize()
             synchronized(captureResizeLock) {
                 captureWidth = width
                 captureHeight = height
+                lastCaptureWidth = width
+                lastCaptureHeight = height
                 isCaptureFormatReady = false
             }
             source.adaptOutputFormat(width, height, VIDEO_CAPTURE_FPS)
@@ -597,9 +755,7 @@ class WebRtcManager(
                         pendingCaptureHeight = 0
                         pendingCaptureReason = ""
                     }
-                } else {
-                    null
-                }
+                } else null
             }
             pendingResize?.let { (pendingWidth, pendingHeight, pendingReason) ->
                 updateScreenCaptureSize(pendingWidth, pendingHeight, pendingReason)
@@ -611,86 +767,62 @@ class WebRtcManager(
                 "screen capture started ${width}x${height}@${VIDEO_CAPTURE_FPS}fps"
             )
 
-            // Start system-audio capture from the same MediaProjection instance used by video.
-            // Android 14+ rejects creating a second projection from the same consent result.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val capture = SystemAudioCapture(context)
-                val sharedProjection = capturer.mediaProjection
-                val started = sharedProjection != null && capture.start(
-                    mediaProjection = sharedProjection,
-                    sampleRate = AUDIO_SAMPLE_RATE_HZ,
-                    channelCount = AUDIO_CHANNEL_COUNT // Mono to match WebRTC input configuration
-                )
-                if (started) {
-                    systemAudioCapture = capture
-                    Log.d(TAG, "SystemAudioCapture wired to audio injection callback")
-                    Log.d(TAG, "System playback capture enabled (mono 48kHz, 960 bytes/frame)")
-                    SessionTraceRecorder.record(TAG, "system audio capture started")
-                    onStatusChange("Audio mode: system playback capture")
-                } else {
-                    capture.stop()
-                    systemAudioCapture = null
-                    val reason = capture.lastError ?: "unavailable"
-                    onStatusChange("Audio mode: silence (system playback unavailable)")
-                    Log.w(TAG, "System playback capture unavailable; microphone remains disabled: $reason")
-                    SessionTraceRecorder.record(TAG, "system audio unavailable: $reason")
+            startSystemAudioCapture(capturer)
+
+            if (videoTrack == null) {
+                videoTrack = peerConnectionFactory.createVideoTrack("screen_track", source).apply {
+                    setEnabled(true)
                 }
-            } else {
-                onStatusChange("Audio mode: silence (Android 10+ required for system audio)")
-                SessionTraceRecorder.record(TAG, "system audio unavailable: Android 10+ required")
+            }
+            if (audioSource == null) {
+                audioSource = peerConnectionFactory.createAudioSource(MediaConstraints())
+            }
+            if (audioTrack == null) {
+                audioTrack = peerConnectionFactory.createAudioTrack("audio_track", audioSource).apply {
+                    setEnabled(true)
+                }
             }
 
-            videoTrack = peerConnectionFactory.createVideoTrack("screen_track", videoSource).apply {
-                setEnabled(true)
-            }
-
-            Log.d(TAG, "=== Creating audioSource and audioTrack ===")
-            audioSource = peerConnectionFactory.createAudioSource(MediaConstraints())
-            audioTrack = peerConnectionFactory.createAudioTrack("audio_track", audioSource).apply {
-                setEnabled(true)
-            }
-            Log.d(TAG, "audioSource and audioTrack created, audioTrack.enabled=true")
-            Log.d(TAG, "systemAudioCapture=${systemAudioCapture != null}, audioSource=${audioSource != null}")
-            SessionTraceRecorder.record(
-                TAG,
-                "audio track created systemAudioCapture=${systemAudioCapture != null} audioSource=${audioSource != null}"
-            )
-
-            // Stream ID is critical: the receiver uses it to group tracks into a MediaStream
-            // and bind it to the video player. Without it, ontrack.streams may be empty.
+            val hadAttachedMedia = videoSender != null && audioSender != null &&
+                videoTrack != null && audioTrack != null && !wasAwaitingReselection
             val streamId = listOf("screen-share")
             val currentVideoTrack = checkNotNull(videoTrack)
             val currentAudioTrack = checkNotNull(audioTrack)
             videoSender = videoSender?.also { sender ->
                 check(sender.setTrack(currentVideoTrack, false)) {
-                    "Failed to attach the new video track to the existing sender"
+                    "Failed to attach the screen track to the existing sender"
                 }
             } ?: peerConnection?.addTrack(currentVideoTrack, streamId)
             audioSender = audioSender?.also { sender ->
                 check(sender.setTrack(currentAudioTrack, false)) {
-                    "Failed to attach the new audio track to the existing sender"
+                    "Failed to attach the audio track to the existing sender"
                 }
             } ?: peerConnection?.addTrack(currentAudioTrack, streamId)
-            Log.d(
-                TAG,
-                "Tracks added to PeerConnection with streamId=$streamId " +
-                    "videoSender=${videoSender?.id()} audioSender=${audioSender?.id()}"
-            )
-            SessionTraceRecorder.record(
-                TAG,
-                "tracks added videoSender=${videoSender?.id()} audioSender=${audioSender?.id()}"
-            )
+            check(videoSender != null && audioSender != null) { "PeerConnection is unavailable" }
 
-            isCasting = true
+            forwardRealCaptureFrames = true
+            statusVideoFrameProducer.stop()
+            dispatch(CastSessionEvent.CaptureActivated)
             muteLocalPlaybackForCasting()
             startVideoStatsPolling()
-            onStatusChange("Screen capture started, renegotiating...")
-            SessionTraceRecorder.record(TAG, "screen capture active, renegotiating")
+            onStatusChange("Screen capture started, ${if (hadAttachedMedia) "resumed" else "renegotiating"}...")
+            SessionTraceRecorder.record(TAG, "screen capture active hadAttachedMedia=$hadAttachedMedia")
 
-            createAndSendOffer()
+            if (!hadAttachedMedia) {
+                createAndSendOffer()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "startScreenCapture failed", e)
             SessionTraceRecorder.record(TAG, "startScreenCapture failed: ${e.message}")
+            releasePhysicalCaptureResources(stopCapturer = true)
+            forwardRealCaptureFrames = false
+            if (wasAwaitingReselection && videoTrack != null && videoSource != null) {
+                dispatch(CastSessionEvent.CaptureFailed(e.message))
+                startStatusFrameForCurrentState()
+            } else {
+                disposeMediaPipeline()
+                dispatch(CastSessionEvent.CaptureFailed(e.message))
+            }
             restoreLocalPlaybackAfterCasting()
             onStatusChange("Screen capture failed: ${e.message}")
             throw e
@@ -698,32 +830,147 @@ class WebRtcManager(
     }
 
     fun stopScreenCapture() {
-        stopScreenCaptureInternal(stoppedBySystem = false)
+        stopScreenCaptureInternal()
     }
 
-    private fun stopScreenCaptureInternal(stoppedBySystem: Boolean) {
-        SessionTraceRecorder.record(TAG, "stopScreenCapture")
-        // Set this before stopping the capturer because stopCapture() invokes MediaProjection.onStop.
-        // The callback must not enter this cleanup routine a second time.
-        isCasting = false
+    private fun stopScreenCaptureInternal() {
+        if (isCleanupInProgress) return
+        SessionTraceRecorder.record(TAG, "stopScreenCapture requested")
+        val hadMedia = videoTrack != null || audioTrack != null ||
+            _sessionState.value.capture != CaptureState.IDLE
+        dispatch(CastSessionEvent.CaptureStopping)
+        forwardRealCaptureFrames = false
+        statusVideoFrameProducer.stop()
         stopVideoStatsPolling()
+        releasePhysicalCaptureResources(stopCapturer = true)
+        disposeMediaPipeline()
+        restoreLocalPlaybackAfterCasting()
+        dispatch(CastSessionEvent.UserStoppedCapture)
+        lastRemoteAnswerSdp = null
+        onStatusChange("Casting stopped")
+        SessionTraceRecorder.record(TAG, "casting stopped")
+        ScreenCaptureService.stop(context)
+        if (hadMedia) createAndSendOffer()
+    }
+
+    private fun handleProjectionStopped(generation: Long) {
+        if (generation != activeCaptureGeneration || isCleanupInProgress) return
+        val capture = _sessionState.value.capture
+        if (capture != CaptureState.ACTIVE && capture != CaptureState.PAUSED_HIDDEN &&
+            capture != CaptureState.STARTING
+        ) return
+
+        val reason = if (!powerManager.isInteractive || keyguardManager.isKeyguardLocked) {
+            ProjectionStopReason.SCREEN_LOCKED
+        } else {
+            ProjectionStopReason.PROJECTION_STOPPED
+        }
+        forwardRealCaptureFrames = false
+        stopVideoStatsPolling()
+        dispatch(CastSessionEvent.ProjectionStopped(reason))
+        releasePhysicalCaptureResources(stopCapturer = false)
+        startStatusFrameForCurrentState()
+        restoreLocalPlaybackAfterCasting()
+        onStatusChange(
+            if (reason == ProjectionStopReason.SCREEN_LOCKED) {
+                "Phone locked; screen capture stopped. Reselect content after unlocking."
+            } else {
+                "Shared content stopped; reselect content to resume."
+            }
+        )
+        SessionTraceRecorder.record(TAG, "projection stopped reason=$reason; placeholder retained")
+    }
+
+    private fun handleCapturedContentVisibilityChanged(isVisible: Boolean) {
+        when {
+            !isVisible && _sessionState.value.capture == CaptureState.ACTIVE -> {
+                forwardRealCaptureFrames = false
+                pauseSystemAudioCapture()
+                dispatch(CastSessionEvent.CapturedContentHidden)
+                startStatusFrameForCurrentState()
+                onStatusChange(currentCastingStatus())
+            }
+            isVisible && _sessionState.value.capture == CaptureState.PAUSED_HIDDEN -> {
+                statusVideoFrameProducer.stop()
+                startSystemAudioCapture(screenCapturer)
+                forwardRealCaptureFrames = true
+                dispatch(CastSessionEvent.CapturedContentVisible)
+                onStatusChange(currentCastingStatus())
+            }
+        }
+    }
+
+    private fun startSystemAudioCapture(capturer: ScreenCapturerAndroid?) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            onStatusChange("Audio mode: silence (Android 10+ required for system audio)")
+            SessionTraceRecorder.record(TAG, "system audio unavailable: Android 10+ required")
+            return
+        }
+        val projection = capturer?.mediaProjection
+        if (projection == null) {
+            onStatusChange("Audio mode: silence (system playback unavailable)")
+            return
+        }
+        systemAudioCapture?.stop()
+        val capture = SystemAudioCapture(context)
+        if (capture.start(projection, AUDIO_SAMPLE_RATE_HZ, AUDIO_CHANNEL_COUNT)) {
+            systemAudioCapture = capture
+            Log.d(TAG, "System playback capture enabled (mono 48kHz, 960 bytes/frame)")
+            SessionTraceRecorder.record(TAG, "system audio capture started")
+            onStatusChange("Audio mode: system playback capture")
+        } else {
+            capture.stop()
+            systemAudioCapture = null
+            val reason = capture.lastError ?: "unavailable"
+            Log.w(TAG, "System playback capture unavailable; microphone remains disabled: $reason")
+            SessionTraceRecorder.record(TAG, "system audio unavailable: $reason")
+            onStatusChange("Audio mode: silence (system playback unavailable)")
+        }
+    }
+
+    private fun pauseSystemAudioCapture() {
+        systemAudioCapture?.stop()
+        systemAudioCapture = null
+        SessionTraceRecorder.record(TAG, "system audio paused while captured content is hidden")
+    }
+
+    private fun releasePhysicalCaptureResources(stopCapturer: Boolean) {
         unregisterCaptureDisplayListener()
+        synchronized(captureResizeLock) {
+            // Invalidate queued resize/visibility work before disposing the physical projection.
+            activeCaptureGeneration = 0L
+        }
         val capturer = detachScreenCapturer()
-        try { capturer?.stopCapture() } catch (_: Exception) {}
+        if (stopCapturer) {
+            try { capturer?.stopCapture() } catch (_: Exception) {}
+        }
         try { capturer?.dispose() } catch (_: Exception) {}
         systemAudioCapture?.stop()
         systemAudioCapture = null
+        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
+        surfaceTextureHelper = null
+        isCaptureFormatReady = false
+        forwardRealCaptureFrames = false
+    }
 
-        // Keep the same RTP senders/transceivers across repeated capture sessions.
-        // removeTrack()+addTrack() grows Unified Plan SDP with inactive m-lines, and querying
-        // PeerConnection.senders disposes the retained Java RtpSender wrapper.
+    private fun disposeMediaPipeline() {
+        statusVideoFrameProducer.stop()
+        forwardRealCaptureFrames = false
+        val shouldNotifyCapturerStopped = synchronized(captureResizeLock) {
+            val wasStarted = downstreamCaptureStarted
+            downstreamCaptureStarted = false
+            wasStarted
+        }
+        if (shouldNotifyCapturerStopped) {
+            try { downstreamCapturerObserver?.onCapturerStopped() } catch (_: Exception) {}
+        }
+        downstreamCapturerObserver = null
         try { videoSender?.setTrack(null, false) } catch (e: Exception) {
             Log.w(TAG, "Failed to detach video track: ${e.message}")
         }
         try { audioSender?.setTrack(null, false) } catch (e: Exception) {
             Log.w(TAG, "Failed to detach audio track: ${e.message}")
         }
-
         try { videoTrack?.dispose() } catch (_: Exception) {}
         videoTrack = null
         try { audioTrack?.dispose() } catch (_: Exception) {}
@@ -732,16 +979,31 @@ class WebRtcManager(
         videoSource = null
         try { audioSource?.dispose() } catch (_: Exception) {}
         audioSource = null
-        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
-        surfaceTextureHelper = null
+        lastCaptureWidth = 0
+        lastCaptureHeight = 0
+    }
 
-        restoreLocalPlaybackAfterCasting()
-        lastRemoteAnswerSdp = null
-        val status = if (stoppedBySystem) "Screen capture stopped" else "Casting stopped"
-        onStatusChange(status)
-        SessionTraceRecorder.record(TAG, status.lowercase())
+    private fun startStatusFrameForCurrentState() {
+        val messageKey = _sessionState.value.statusFrameMessage ?: return
+        if (videoSource == null || videoTrack == null || downstreamCapturerObserver == null) return
+        val width = lastCaptureWidth.takeIf { it > 0 } ?: readDefaultDisplaySize().first
+        val height = lastCaptureHeight.takeIf { it > 0 } ?: readDefaultDisplaySize().second
+        statusVideoFrameProducer.start(width, height, localizedStatusFrameMessage(messageKey))
+        forwardRealCaptureFrames = false
+        SessionTraceRecorder.record(
+            TAG,
+            "status video frame started key=$messageKey size=${width}x$height"
+        )
+    }
 
-        createAndSendOffer()
+    private fun localizedStatusFrameMessage(message: StatusFrameMessage): String = when (message) {
+        StatusFrameMessage.CONTENT_HIDDEN -> context.getString(R.string.status_frame_content_hidden)
+        StatusFrameMessage.SCREEN_LOCKED -> context.getString(R.string.status_frame_screen_locked)
+        StatusFrameMessage.PROJECTION_STOPPED ->
+            context.getString(R.string.status_frame_projection_stopped)
+        StatusFrameMessage.PERMISSION_DENIED ->
+            context.getString(R.string.status_frame_permission_denied)
+        StatusFrameMessage.CAPTURE_ERROR -> context.getString(R.string.status_frame_capture_error)
     }
 
     // ── Remote SDP/ICE handling ──
@@ -807,11 +1069,9 @@ class WebRtcManager(
                 Log.d(TAG, "=== ANSWER SET SUCCESS === isCasting=$isCasting")
                 SessionTraceRecorder.record(TAG, "remote answer set success isCasting=$isCasting")
                 lastRemoteAnswerSdp = sdp
-                if (isCasting) {
-                    onStatusChange("Casting")
-                } else {
-                    onStatusChange("P2P connected, ready to cast")
-                }
+                // A remote SDP answer means negotiation succeeded, not that the media path is
+                // connected. ICE CONNECTED/COMPLETED remains the source of truth.
+                onStatusChange(currentCastingStatus())
             }
             override fun onSetFailure(error: String) {
                 Log.e(TAG, "=== ANSWER SET FAILED === $error")
@@ -951,18 +1211,42 @@ class WebRtcManager(
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED -> {
+                    dispatch(CastSessionEvent.TransportChanged(TransportState.CONNECTED))
                     if (isCasting) {
                         logAudioTransceiverStatus()
                         requestVideoStatsSnapshot("ice-connected")
-                        onStatusChange("Casting")
                     }
-                    else onStatusChange("P2P connected, ready to cast")
+                    onStatusChange(currentCastingStatus())
                 }
-                PeerConnection.IceConnectionState.DISCONNECTED ->
-                    onStatusChange("P2P disconnected")
-                PeerConnection.IceConnectionState.FAILED ->
-                    onStatusChange("P2P connection failed")
-                else -> {}
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
+                    dispatch(CastSessionEvent.TransportChanged(TransportState.DISCONNECTED))
+                    onStatusChange(if (isCasting) {
+                        "Receiver connection interrupted, reconnecting..."
+                    } else {
+                        "P2P disconnected"
+                    })
+                }
+                PeerConnection.IceConnectionState.FAILED -> {
+                    dispatch(CastSessionEvent.TransportChanged(TransportState.FAILED))
+                    onStatusChange(if (isCasting) {
+                        "Receiver connection failed; screen capture is still active"
+                    } else {
+                        "P2P connection failed"
+                    })
+                }
+                PeerConnection.IceConnectionState.NEW,
+                PeerConnection.IceConnectionState.CHECKING -> {
+                    dispatch(CastSessionEvent.TransportChanged(TransportState.CONNECTING))
+                    onStatusChange(currentCastingStatus())
+                }
+                PeerConnection.IceConnectionState.CLOSED -> {
+                    dispatch(CastSessionEvent.TransportChanged(TransportState.CLOSED))
+                    onStatusChange(if (isCasting) {
+                        "Receiver connection closed; screen capture is still active"
+                    } else {
+                        "P2P disconnected"
+                    })
+                }
             }
         }
 
@@ -1118,34 +1402,22 @@ class WebRtcManager(
         isCleanupInProgress = true
         SessionTraceRecorder.record(TAG, "cleanupP2P begin")
 
-        isCasting = false
+        statusVideoFrameProducer.stop()
         stopVideoStatsPolling()
         restoreLocalPlaybackAfterCasting()
         isDataChannelOpen = false
         lastRemoteAnswerSdp = null
-        unregisterCaptureDisplayListener()
-        val capturer = detachScreenCapturer()
-        try { capturer?.stopCapture() } catch (_: Exception) {}
-        try { capturer?.dispose() } catch (_: Exception) {}
-        systemAudioCapture?.stop()
-        systemAudioCapture = null
-        try { videoTrack?.dispose() } catch (_: Exception) {}
-        videoTrack = null
-        try { audioTrack?.dispose() } catch (_: Exception) {}
-        audioTrack = null
+        releasePhysicalCaptureResources(stopCapturer = true)
+        disposeMediaPipeline()
         videoSender = null
         audioSender = null
-        try { videoSource?.dispose() } catch (_: Exception) {}
-        videoSource = null
-        try { audioSource?.dispose() } catch (_: Exception) {}
-        audioSource = null
-        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
-        surfaceTextureHelper = null
         dataChannel?.close()
         dataChannel = null
         peerConnection?.close()
         try { peerConnection?.dispose() } catch (_: Exception) {}
         peerConnection = null
+        dispatch(CastSessionEvent.SessionClosed)
+        ScreenCaptureService.stop(context)
         SessionTraceRecorder.record(TAG, "cleanupP2P end")
     }
 
