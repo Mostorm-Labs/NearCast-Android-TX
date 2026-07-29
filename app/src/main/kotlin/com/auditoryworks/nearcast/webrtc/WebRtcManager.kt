@@ -2,12 +2,17 @@ package com.auditoryworks.nearcast.webrtc
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
 import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Display
+import android.view.Surface
 import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +43,7 @@ import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
+import org.webrtc.ThreadUtils
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
@@ -47,6 +53,7 @@ private const val TAG = "WebRtcManager"
 private const val AUDIO_SAMPLE_RATE_HZ = 48_000
 private const val AUDIO_CHANNEL_COUNT = 1
 private const val VIDEO_CAPTURE_FPS = 30
+private const val VIRTUAL_DISPLAY_DPI = 400
 
 /**
  * Two-phase WebRTC manager for NearHub screen casting.
@@ -87,6 +94,38 @@ class WebRtcManager(
     private var mutedLocalPlaybackForCasting = false
     private var videoStatsPollingJob: Job? = null
     private var videoStatsSnapshotCount = 0
+    private val captureResizeLock = Any()
+    private val captureDisplayHandler = Handler(Looper.getMainLooper())
+    private var captureDisplayManager: DisplayManager? = null
+    private var isCaptureDisplayListenerRegistered = false
+    private var captureWidth = 0
+    private var captureHeight = 0
+    private var isCaptureFormatReady = false
+    private var pendingCaptureWidth = 0
+    private var pendingCaptureHeight = 0
+    private var pendingCaptureReason = ""
+
+    @Volatile
+    private var receivedCapturedContentSize = false
+
+    private val captureDisplayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+
+        override fun onDisplayRemoved(displayId: Int) = Unit
+
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId != Display.DEFAULT_DISPLAY) return
+            // Android 14+ reports the selected app's actual content bounds. Once
+            // available, that is more accurate than the physical display size.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                receivedCapturedContentSize
+            ) {
+                return
+            }
+            val (width, height) = readDefaultDisplaySize()
+            updateScreenCaptureSize(width, height, "display changed")
+        }
+    }
 
     private var injectionFrameCount = 0
     private var emptyInjectionCount = 0
@@ -364,6 +403,139 @@ class WebRtcManager(
 
     // ── Phase 2: Screen Capture + Renegotiate ──
 
+    @Suppress("DEPRECATION")
+    private fun readDefaultDisplaySize(): Pair<Int, Int> {
+        val manager = captureDisplayManager
+            ?: context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val metrics = DisplayMetrics()
+        manager.getDisplay(Display.DEFAULT_DISPLAY)?.getRealMetrics(metrics)
+        if (metrics.widthPixels > 0 && metrics.heightPixels > 0) {
+            return metrics.widthPixels to metrics.heightPixels
+        }
+
+        val fallback = context.resources.displayMetrics
+        return fallback.widthPixels to fallback.heightPixels
+    }
+
+    private fun registerCaptureDisplayListener() {
+        val manager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        synchronized(captureResizeLock) {
+            if (isCaptureDisplayListenerRegistered) return
+            captureDisplayManager = manager
+            isCaptureDisplayListenerRegistered = true
+        }
+        try {
+            manager.registerDisplayListener(captureDisplayListener, captureDisplayHandler)
+            SessionTraceRecorder.record(TAG, "capture display listener registered")
+        } catch (e: Exception) {
+            synchronized(captureResizeLock) {
+                isCaptureDisplayListenerRegistered = false
+                captureDisplayManager = null
+            }
+            Log.w(TAG, "Failed to register capture display listener", e)
+            SessionTraceRecorder.record(TAG, "capture display listener failed: ${e.message}")
+        }
+    }
+
+    private fun unregisterCaptureDisplayListener() {
+        val manager = synchronized(captureResizeLock) {
+            if (!isCaptureDisplayListenerRegistered) return
+            isCaptureDisplayListenerRegistered = false
+            captureDisplayManager.also { captureDisplayManager = null }
+        }
+        try {
+            manager?.unregisterDisplayListener(captureDisplayListener)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to unregister capture display listener", e)
+        }
+    }
+
+    private fun updateScreenCaptureSize(width: Int, height: Int, reason: String) {
+        if (width <= 0 || height <= 0) {
+            Log.w(TAG, "Ignoring invalid capture size ${width}x$height ($reason)")
+            return
+        }
+
+        synchronized(captureResizeLock) {
+            if (isCleanupInProgress || (width == captureWidth && height == captureHeight)) return
+            if (!isCaptureFormatReady) {
+                pendingCaptureWidth = width
+                pendingCaptureHeight = height
+                pendingCaptureReason = reason
+                Log.d(TAG, "Deferring capture resize to ${width}x$height ($reason)")
+                return
+            }
+            val capturer = screenCapturer ?: return
+            val source = videoSource ?: return
+
+            try {
+                resizeVirtualDisplayInPlace(capturer, width, height)
+                source.adaptOutputFormat(width, height, VIDEO_CAPTURE_FPS)
+                captureWidth = width
+                captureHeight = height
+                Log.i(TAG, "Screen capture resized to ${width}x${height}@${VIDEO_CAPTURE_FPS}fps ($reason)")
+                SessionTraceRecorder.record(
+                    TAG,
+                    "screen capture resized ${width}x${height}@${VIDEO_CAPTURE_FPS}fps reason=$reason"
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to resize screen capture to ${width}x$height ($reason)", e)
+                SessionTraceRecorder.record(
+                    TAG,
+                    "screen capture resize failed ${width}x$height reason=$reason: ${e.message}"
+                )
+            }
+        }
+    }
+
+    /**
+     * WebRTC 1.3.9 implements [ScreenCapturerAndroid.changeCaptureFormat] by releasing and
+     * recreating its VirtualDisplay. Android 14+ only permits one VirtualDisplay for each screen
+     * capture consent token, so that implementation terminates MediaProjection during rotation.
+     *
+     * Newer upstream WebRTC resizes the existing VirtualDisplay on Android 12+. Keep the same
+     * behavior locally while this project remains pinned to 1.3.9.
+     */
+    private fun resizeVirtualDisplayInPlace(
+        capturer: ScreenCapturerAndroid,
+        width: Int,
+        height: Int
+    ) {
+        val helper = surfaceTextureHelper
+            ?: throw IllegalStateException("SurfaceTextureHelper is unavailable")
+        val capturerClass = ScreenCapturerAndroid::class.java
+        val virtualDisplayField = capturerClass.getDeclaredField("virtualDisplay").apply {
+            isAccessible = true
+        }
+        val widthField = capturerClass.getDeclaredField("width").apply { isAccessible = true }
+        val heightField = capturerClass.getDeclaredField("height").apply { isAccessible = true }
+
+        widthField.setInt(capturer, width)
+        heightField.setInt(capturer, height)
+
+        ThreadUtils.invokeAtFrontUninterruptibly(helper.handler, Runnable {
+            val virtualDisplay = virtualDisplayField.get(capturer) as? VirtualDisplay
+                ?: throw IllegalStateException("Screen capture VirtualDisplay is unavailable")
+            helper.setTextureSize(width, height)
+            virtualDisplay.resize(width, height, VIRTUAL_DISPLAY_DPI)
+            virtualDisplay.surface = Surface(helper.surfaceTexture)
+        })
+    }
+
+    private fun detachScreenCapturer(): ScreenCapturerAndroid? =
+        synchronized(captureResizeLock) {
+            screenCapturer.also {
+                screenCapturer = null
+                captureWidth = 0
+                captureHeight = 0
+                isCaptureFormatReady = false
+                pendingCaptureWidth = 0
+                pendingCaptureHeight = 0
+                pendingCaptureReason = ""
+                receivedCapturedContentSize = false
+            }
+        }
+
     fun startScreenCapture(data: Intent) {
         if (isCleanupInProgress) {
             Log.w(TAG, "startScreenCapture ignored: cleanup in progress")
@@ -378,9 +550,10 @@ class WebRtcManager(
         injectionFrameCount = 0
         emptyInjectionCount = 0
         audioDataCallbackCount = 0
+        receivedCapturedContentSize = false
 
         try {
-            screenCapturer = ScreenCapturerAndroid(data, object : MediaProjection.Callback() {
+            val capturer = ScreenCapturerAndroid(data, object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.d(TAG, "MediaProjection stopped by system")
                     SessionTraceRecorder.record(TAG, "MediaProjection stopped by system")
@@ -390,31 +563,59 @@ class WebRtcManager(
                         }
                     }
                 }
+
+                override fun onCapturedContentResize(width: Int, height: Int) {
+                    if (width <= 0 || height <= 0) return
+                    receivedCapturedContentSize = true
+                    updateScreenCaptureSize(width, height, "captured content changed")
+                }
             })
+            synchronized(captureResizeLock) {
+                screenCapturer = capturer
+            }
 
             surfaceTextureHelper = SurfaceTextureHelper.create(
                 "CaptureThread", eglBase.eglBaseContext
             )
 
-            videoSource = peerConnectionFactory.createVideoSource(true).also { source ->
-                screenCapturer!!.initialize(surfaceTextureHelper, context, source.capturerObserver)
-                val dm = context.resources.displayMetrics
-                val width = dm.widthPixels
-                val height = dm.heightPixels
-                source.adaptOutputFormat(width, height, VIDEO_CAPTURE_FPS)
-                screenCapturer!!.startCapture(width, height, VIDEO_CAPTURE_FPS)
-                Log.d(TAG, "Screen capture at ${width}x${height}@${VIDEO_CAPTURE_FPS}fps")
-                SessionTraceRecorder.record(
-                    TAG,
-                    "screen capture started ${width}x${height}@${VIDEO_CAPTURE_FPS}fps"
-                )
+            val source = peerConnectionFactory.createVideoSource(true)
+            videoSource = source
+            capturer.initialize(surfaceTextureHelper, context, source.capturerObserver)
+            val (width, height) = readDefaultDisplaySize()
+            synchronized(captureResizeLock) {
+                captureWidth = width
+                captureHeight = height
+                isCaptureFormatReady = false
             }
+            source.adaptOutputFormat(width, height, VIDEO_CAPTURE_FPS)
+            capturer.startCapture(width, height, VIDEO_CAPTURE_FPS)
+            val pendingResize = synchronized(captureResizeLock) {
+                isCaptureFormatReady = true
+                if (pendingCaptureWidth > 0 && pendingCaptureHeight > 0) {
+                    Triple(pendingCaptureWidth, pendingCaptureHeight, pendingCaptureReason).also {
+                        pendingCaptureWidth = 0
+                        pendingCaptureHeight = 0
+                        pendingCaptureReason = ""
+                    }
+                } else {
+                    null
+                }
+            }
+            pendingResize?.let { (pendingWidth, pendingHeight, pendingReason) ->
+                updateScreenCaptureSize(pendingWidth, pendingHeight, pendingReason)
+            }
+            registerCaptureDisplayListener()
+            Log.d(TAG, "Screen capture at ${width}x${height}@${VIDEO_CAPTURE_FPS}fps")
+            SessionTraceRecorder.record(
+                TAG,
+                "screen capture started ${width}x${height}@${VIDEO_CAPTURE_FPS}fps"
+            )
 
             // Start system-audio capture from the same MediaProjection instance used by video.
             // Android 14+ rejects creating a second projection from the same consent result.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val capture = SystemAudioCapture(context)
-                val sharedProjection = screenCapturer?.mediaProjection
+                val sharedProjection = capturer.mediaProjection
                 val started = sharedProjection != null && capture.start(
                     mediaProjection = sharedProjection,
                     sampleRate = AUDIO_SAMPLE_RATE_HZ,
@@ -506,9 +707,10 @@ class WebRtcManager(
         // The callback must not enter this cleanup routine a second time.
         isCasting = false
         stopVideoStatsPolling()
-        try { screenCapturer?.stopCapture() } catch (_: Exception) {}
-        try { screenCapturer?.dispose() } catch (_: Exception) {}
-        screenCapturer = null
+        unregisterCaptureDisplayListener()
+        val capturer = detachScreenCapturer()
+        try { capturer?.stopCapture() } catch (_: Exception) {}
+        try { capturer?.dispose() } catch (_: Exception) {}
         systemAudioCapture?.stop()
         systemAudioCapture = null
 
@@ -921,9 +1123,10 @@ class WebRtcManager(
         restoreLocalPlaybackAfterCasting()
         isDataChannelOpen = false
         lastRemoteAnswerSdp = null
-        try { screenCapturer?.stopCapture() } catch (_: Exception) {}
-        try { screenCapturer?.dispose() } catch (_: Exception) {}
-        screenCapturer = null
+        unregisterCaptureDisplayListener()
+        val capturer = detachScreenCapturer()
+        try { capturer?.stopCapture() } catch (_: Exception) {}
+        try { capturer?.dispose() } catch (_: Exception) {}
         systemAudioCapture?.stop()
         systemAudioCapture = null
         try { videoTrack?.dispose() } catch (_: Exception) {}
