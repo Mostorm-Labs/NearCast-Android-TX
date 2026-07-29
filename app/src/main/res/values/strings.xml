@@ -1,3 +1,44 @@
 <resources>
     <string name="app_name">NearCast</string>
+
+    <string name="screen_cast_channel_name">Screen casting</string>
+    <string name="screen_cast_channel_description">NearCast screen sharing status</string>
+    <string name="notification_capture_starting">Starting screen sharing…</string>
+    <string name="notification_capture_active">Your screen is being shared</string>
+    <string name="notification_capture_hidden">Shared app is not visible; waiting to resume</string>
+    <string name="notification_capture_locked">Screen sharing stopped after the phone was locked. Tap to reselect.</string>
+    <string name="notification_capture_stopped">Screen sharing stopped. Tap to reselect content.</string>
+    <string name="notification_capture_permission_denied">Screen sharing permission was not granted. Tap to retry.</string>
+    <string name="notification_capture_error">Screen sharing needs attention. Tap to retry.</string>
+
+    <string name="status_frame_content_hidden">Shared app is not visible\nReturn to the app to resume automatically</string>
+    <string name="status_frame_screen_locked">Phone locked. Screen sharing stopped\nUnlock the phone and reselect content in NearCast</string>
+    <string name="status_frame_projection_stopped">Shared app closed or screen sharing stopped\nReselect content in NearCast</string>
+    <string name="status_frame_permission_denied">Screen sharing permission was not granted\nRetry in NearCast</string>
+    <string name="status_frame_capture_error">Screen sharing is temporarily unavailable\nReselect content in NearCast</string>
+
+    <string name="session_connection_title">Receiver connection</string>
+    <string name="session_connection_idle">Not connected</string>
+    <string name="session_connection_connecting">Connecting…</string>
+    <string name="session_connection_connected">Connected</string>
+    <string name="session_connection_disconnected">Connection interrupted; reconnecting…</string>
+    <string name="session_connection_failed">Connection failed</string>
+    <string name="session_connection_closed">Connection closed</string>
+    <string name="session_capture_title">Shared content</string>
+    <string name="session_capture_idle">Ready to start sharing</string>
+    <string name="session_capture_requesting">Waiting for screen sharing permission…</string>
+    <string name="session_capture_starting">Starting screen sharing…</string>
+    <string name="session_capture_active">Screen is being shared</string>
+    <string name="session_capture_hidden">Shared app is not visible; return to it to resume automatically</string>
+    <string name="session_capture_locked">Phone was locked. Unlock it and reselect shared content.</string>
+    <string name="session_capture_stopped">Shared app closed or screen sharing stopped. Reselect content.</string>
+    <string name="session_capture_permission_denied">Screen sharing permission was not granted. Try again.</string>
+    <string name="session_capture_error">Screen sharing is temporarily unavailable. Reselect content.</string>
+    <string name="session_capture_stopping">Stopping screen sharing…</string>
+    <string name="session_action_start">Start Screen Cast</string>
+    <string name="session_action_reselect">Reselect Shared Content</string>
+    <string name="session_action_stop">Stop Casting</string>
+    <string name="session_action_leave">Leave Room</string>
+    <string name="session_action_show_update">Show update progress</string>
+    <string name="session_action_upload_logs">Upload logs</string>
 </resources>

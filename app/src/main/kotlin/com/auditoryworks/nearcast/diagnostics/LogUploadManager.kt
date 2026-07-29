@@ -1,5 +1,6 @@
 package com.auditoryworks.nearcast.diagnostics
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
 import com.auditoryworks.nearcast.BuildConfig
@@ -114,6 +115,7 @@ object LogUploadManager {
 
     private fun createdArchive(context: Context, file: File, info: LogArchiveInfo) = CreatedArchive(file, info)
 
+    @SuppressLint("NewApi")
     private fun readLogcat(packageName: String): LogcatCapture {
         val filterPatterns = listOf(
             packageName,
