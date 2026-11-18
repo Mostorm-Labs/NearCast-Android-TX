@@ -1,6 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">NearHub Cast</string>
+    <string name="ui_sender_eyebrow">屏幕投屏</string>
+    <string name="ui_welcome_title">欢迎投屏</string>
+    <string name="ui_local_eyebrow">局域网</string>
+    <string name="ui_receivers_title">可用接收端</string>
+    <string name="ui_receivers_hint">查找同一网络中的接收端，直接进行本地投屏。</string>
+    <string name="ui_session_eyebrow">投屏会话</string>
+    <string name="ui_version">版本 %1$s</string>
+    <string name="logs_title">上传日志</string>
+    <string name="logs_email">邮箱</string>
+    <string name="logs_description">问题描述</string>
+    <string name="logs_uploading">正在压缩并上传日志…</string>
+    <string name="logs_upload">上传</string>
+    <string name="logs_cancel">取消</string>
 
     <string name="screen_cast_channel_name">屏幕投送</string>
     <string name="screen_cast_channel_description">NearHub Cast 屏幕共享状态</string>

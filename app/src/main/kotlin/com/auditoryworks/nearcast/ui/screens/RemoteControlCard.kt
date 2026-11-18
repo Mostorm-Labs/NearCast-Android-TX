@@ -3,16 +3,27 @@ package com.auditoryworks.nearcast.ui.screens
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.touchback.CalibrationState
 import com.auditoryworks.nearcast.touchback.RemoteControlState
+import com.auditoryworks.nearcast.ui.components.CastInsetPanel
+import com.auditoryworks.nearcast.ui.components.CastDarkDialogBars
+import com.auditoryworks.nearcast.ui.components.CastStatusDot
+import com.auditoryworks.nearcast.ui.theme.CastColors
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
     onOpenSettings: () -> Unit, onHelp: () -> Unit, onRetry: () -> Unit) {
@@ -51,26 +62,36 @@ fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
         !state.appReady -> R.string.remote_status_connecting
         else -> R.string.remote_status_ready
     }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(stringResource(R.string.remote_title), style = MaterialTheme.typography.titleSmall)
-                Switch(checked = state.enabled, onCheckedChange = onEnabled, enabled = state.supported)
-            }
-            Text(stringResource(status), style = MaterialTheme.typography.bodyMedium)
-            Text(stringResource(R.string.remote_card_hint), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (state.supported && state.enabled) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (!state.permissionEnabled || !state.serviceConnected) {
-                        TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.remote_open_settings)) }
-                    } else if (state.cleanupPending || state.calibration == CalibrationState.FAILED || state.disabledReason == "INPUT_SESSION_FAULT") {
-                        TextButton(onClick = onRetry) {
-                            Text(stringResource(if (state.cleanupPending) R.string.remote_retry_cleanup else R.string.remote_retry))
-                        }
+    CastInsetPanel {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(Icons.Default.TouchApp, null, Modifier.size(20.dp), tint = CastColors.Accent)
+            Text(stringResource(R.string.remote_title), Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+            Switch(checked = state.enabled, onCheckedChange = onEnabled, enabled = state.supported,
+                colors = SwitchDefaults.colors(checkedThumbColor = Color.White,
+                    checkedTrackColor = CastColors.Primary, uncheckedTrackColor = Color(0xFF3A4154)))
+        }
+        Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CastStatusDot(when {
+                state.inputState == "active" && state.enabled -> CastColors.Success
+                state.enabled && (!state.permissionEnabled || !state.serviceConnected || state.cleanupPending) -> CastColors.Warning
+                else -> CastColors.Accent
+            })
+            Text(stringResource(status), style = MaterialTheme.typography.bodySmall, color = CastColors.Text)
+        }
+        Text(stringResource(R.string.remote_card_hint), style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state.supported && state.enabled) {
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!state.permissionEnabled || !state.serviceConnected) {
+                    TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.remote_open_settings)) }
+                } else if (state.cleanupPending || state.calibration == CalibrationState.FAILED || state.disabledReason == "INPUT_SESSION_FAULT") {
+                    TextButton(onClick = onRetry) {
+                        Text(stringResource(if (state.cleanupPending) R.string.remote_retry_cleanup else R.string.remote_retry))
                     }
-                    TextButton(onClick = onHelp) { Text(stringResource(R.string.remote_help)) }
                 }
+                TextButton(onClick = onHelp) { Text(stringResource(R.string.remote_help)) }
             }
         }
     }
@@ -99,7 +120,10 @@ fun CapturePermissionDialog(kind: PermissionDialog, onDismiss: () -> Unit, onOpe
         PermissionDialog.AUDIO_PERMANENT -> R.string.audio_permission_permanent_body
     }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(stringResource(title)) },
-        text = { Text(stringResource(body), Modifier.verticalScroll(rememberScrollState())) },
+        text = {
+            CastDarkDialogBars()
+            Text(stringResource(body), Modifier.verticalScroll(rememberScrollState()))
+        },
         confirmButton = {
             when (kind) {
                 PermissionDialog.REMOTE_EXPLANATION, PermissionDialog.REMOTE_NOT_GRANTED ->

@@ -20,6 +20,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.auditoryworks.nearcast.R
+import com.auditoryworks.nearcast.ui.components.CastDarkDialogBars
 
 private const val DEFAULT_LOG_DESCRIPTION = "NearHub Cast logs"
 private const val DEFAULT_LOG_EMAIL = "example@mail.com"
@@ -39,13 +42,14 @@ fun LogUploadDialog(
                 onDismiss()
             }
         },
-        title = { Text("Upload Logs") },
+        title = { Text(stringResource(R.string.logs_title)) },
         text = {
+            CastDarkDialogBars()
             Column {
                 OutlinedTextField(
                     value = email,
                     onValueChange = { email = it },
-                    label = { Text("Email") },
+                    label = { Text(stringResource(R.string.logs_email)) },
                     singleLine = true,
                     enabled = !isUploading,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -57,7 +61,7 @@ fun LogUploadDialog(
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
-                    label = { Text("Description") },
+                    label = { Text(stringResource(R.string.logs_description)) },
                     minLines = 3,
                     enabled = !isUploading,
                     modifier = Modifier.fillMaxWidth()
@@ -71,7 +75,7 @@ fun LogUploadDialog(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Compressing and uploading logs...",
+                        text = stringResource(R.string.logs_uploading),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )
@@ -83,7 +87,7 @@ fun LogUploadDialog(
                 onClick = { onUpload(email, description) },
                 enabled = !isUploading
             ) {
-                Text("Upload")
+                Text(stringResource(R.string.logs_upload))
             }
         },
         dismissButton = {
@@ -91,7 +95,7 @@ fun LogUploadDialog(
                 onClick = onDismiss,
                 enabled = !isUploading
             ) {
-                Text("Cancel")
+                Text(stringResource(R.string.logs_cancel))
             }
         }
     )

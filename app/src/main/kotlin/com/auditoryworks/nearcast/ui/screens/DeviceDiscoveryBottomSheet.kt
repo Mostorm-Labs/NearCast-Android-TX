@@ -14,11 +14,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.discovery.*
+import com.auditoryworks.nearcast.ui.components.*
+import com.auditoryworks.nearcast.ui.theme.CastColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,15 +29,20 @@ fun DeviceDiscoveryBottomSheet(snapshot: DiscoverySnapshot, action: ReceiverActi
     onSelect: (ReceiverDevice) -> Unit, onConfirm: (Boolean) -> Unit, onTrust: () -> Unit,
     onCode: () -> Unit, onForget: () -> Unit, onBack: () -> Unit, onRefresh: () -> Unit,
     onSettings: () -> Unit, onLocalEntry: (ReceiverDevice) -> Unit, onManualEntry: () -> Unit, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color(0xFF171C2B), tonalElevation = 0.dp) {
+        CastDarkDialogBars()
         Column(Modifier.fillMaxWidth().fillMaxHeight(.9f).padding(horizontal = 24.dp).navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.discovery_title), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                Column(Modifier.weight(1f)) {
+                    CastEyebrow(stringResource(R.string.ui_local_eyebrow))
+                    Text(stringResource(R.string.discovery_title), style = MaterialTheme.typography.titleLarge)
+                }
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, stringResource(R.string.discovery_refresh)) }
                 IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, stringResource(R.string.permission_close)) }
             }
             if (action.device == null) {
-                Text(stringResource(R.string.discovery_hint), style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.discovery_hint), style = MaterialTheme.typography.bodySmall, color = CastColors.Muted)
                 snapshot.issue?.let {
                     Text(stringResource(if (it == DiscoveryIssue.PERMISSION) R.string.discovery_permission_error else R.string.discovery_scan_error), color = MaterialTheme.colorScheme.error)
                     if (it == DiscoveryIssue.PERMISSION) TextButton(onClick = onSettings) { Text(stringResource(R.string.permission_app_settings)) }
@@ -47,14 +55,14 @@ fun DeviceDiscoveryBottomSheet(snapshot: DiscoverySnapshot, action: ReceiverActi
                     }
                 } else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(snapshot.devices, key = { it.instance }) { device ->
-                        Card(Modifier.fillMaxWidth().clickable(enabled = device.selectable) { onSelect(device) }) {
-                            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Tv, null); Spacer(Modifier.width(12.dp))
+                        CastInsetPanel(Modifier.clickable(enabled = device.selectable) { onSelect(device) }) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Tv, null, tint = CastColors.Accent); Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(device.name, style = MaterialTheme.typography.titleMedium)
-                                    Text(device.addresses.firstOrNull().orEmpty(), style = MaterialTheme.typography.bodySmall)
-                                    if (device.model.isNotBlank() || device.version.isNotBlank()) Text(listOf(device.model, device.version).filter(String::isNotBlank).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
-                                    Text(stringResource(if (device.selectable) R.string.discovery_select_hint else R.string.discovery_not_compatible), style = MaterialTheme.typography.bodySmall)
+                                    Text(device.addresses.firstOrNull().orEmpty(), style = MaterialTheme.typography.bodySmall, color = CastColors.Muted)
+                                    if (device.model.isNotBlank() || device.version.isNotBlank()) Text(listOf(device.model, device.version).filter(String::isNotBlank).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = CastColors.Muted)
+                                    Text(stringResource(if (device.selectable) R.string.discovery_select_hint else R.string.discovery_not_compatible), style = MaterialTheme.typography.bodySmall, color = if (device.selectable) CastColors.Accent else CastColors.Subtle)
                                 }
                             }
                         }
@@ -93,29 +101,31 @@ fun DeviceDiscoveryBottomSheet(snapshot: DiscoverySnapshot, action: ReceiverActi
                     if (busy) CircularProgressIndicator(Modifier.size(28.dp))
                     if (action.phase == ReceiverPhase.COMPARE) {
                         if (action.previousFingerprint != null && action.previousFingerprint != action.fingerprint) Text(stringResource(R.string.discovery_replacing_key), color = MaterialTheme.colorScheme.error)
-                        Text(action.candidate!!.fingerprint.chunked(4).chunked(4).joinToString("\n") { it.joinToString(" ") }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyLarge)
+                        CastInsetPanel {
+                            Text(action.candidate!!.fingerprint.chunked(4).chunked(4).joinToString("\n") { it.joinToString(" ") }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyLarge)
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = compared, onCheckedChange = { compared = it })
                             Text(stringResource(R.string.discovery_compared), Modifier.clickable { compared = !compared })
                         }
-                        Button(onClick = { onConfirm(compared) }, enabled = compared, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.discovery_confirm)) }
+                        CastPrimaryButton(onClick = { onConfirm(compared) }, enabled = compared, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.discovery_confirm)) }
                     } else if (!busy && action.phase != ReceiverPhase.OFFLINE) {
                         if (action.fingerprint != null && action.phase != ReceiverPhase.KEY_CHANGED && action.phase != ReceiverPhase.EXPIRED && action.phase != ReceiverPhase.UNTRUSTED) {
-                            Button(onClick = onCode, enabled = device.supportsCodeDisplay, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.discovery_show_again)) }
+                            CastPrimaryButton(onClick = onCode, enabled = device.supportsCodeDisplay, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.discovery_show_again)) }
                         }
-                        if (device.supportsTrustDisplay) OutlinedButton(onClick = onTrust, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.discovery_verify)) }
+                        if (device.supportsTrustDisplay) CastSecondaryButton(onClick = onTrust, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.discovery_verify)) }
                     }
                     if (!busy && (action.previousFingerprint != null || (action.candidate == null && action.fingerprint != null))) {
                         TextButton(onClick = onForget) { Text(stringResource(R.string.discovery_forget)) }
                     }
                     if (!busy && action.candidate == null && action.fingerprint != null && action.phase !in setOf(ReceiverPhase.KEY_CHANGED, ReceiverPhase.EXPIRED, ReceiverPhase.UNTRUSTED, ReceiverPhase.OFFLINE)) {
                         Text(stringResource(if (device.codeSelection != null) R.string.local_selected_code_hint else R.string.local_legacy_code_hint))
-                        Button(onClick = { onLocalEntry(device) }, enabled = device.localReady != false, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.local_use_receiver)) }
+                        CastPrimaryButton(onClick = { onLocalEntry(device) }, enabled = device.localReady != false, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.local_use_receiver)) }
                         if (device.localReady == false) Text(stringResource(R.string.local_unavailable), color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
-            OutlinedButton(onClick = onManualEntry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.local_switch_cloud)) }
+            CastSecondaryButton(onClick = onManualEntry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.local_switch_cloud)) }
             Spacer(Modifier.height(8.dp))
         }
     }

@@ -1,5 +1,18 @@
 <resources>
     <string name="app_name">NearHub Cast</string>
+    <string name="ui_sender_eyebrow">SCREENCAST SENDER</string>
+    <string name="ui_welcome_title">Welcome to cast screen</string>
+    <string name="ui_local_eyebrow">LOCAL NETWORK</string>
+    <string name="ui_receivers_title">Available receivers</string>
+    <string name="ui_receivers_hint">Find a nearby receiver to cast over your local network.</string>
+    <string name="ui_session_eyebrow">CAST SESSION</string>
+    <string name="ui_version">Version %1$s</string>
+    <string name="logs_title">Upload logs</string>
+    <string name="logs_email">Email</string>
+    <string name="logs_description">Description</string>
+    <string name="logs_uploading">Compressing and uploading logs…</string>
+    <string name="logs_upload">Upload</string>
+    <string name="logs_cancel">Cancel</string>
 
     <string name="screen_cast_channel_name">Screen casting</string>
     <string name="screen_cast_channel_description">NearHub Cast screen sharing status</string>
