@@ -10,7 +10,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -55,12 +56,13 @@ fun CastDarkDialogBars() {
 
 @Composable
 fun CastScaffold(
-    isLogUploadInProgress: Boolean,
     isUpdateDownloadInProgress: Boolean,
     isDownloadProgressVisible: Boolean,
-    onUploadLogs: () -> Unit,
+    onOpenSettings: () -> Unit,
     onShowDownloadProgress: () -> Unit,
     appVersionName: String = BuildConfig.VERSION_NAME,
+    onBack: (() -> Unit)? = null,
+    showVersion: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Box(Modifier.fillMaxSize().background(CastColors.Background)) {
@@ -71,10 +73,16 @@ fun CastScaffold(
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                Image(painterResource(R.drawable.app_logo), null,
-                    Modifier.size(36.dp).clip(RoundedCornerShape(7.dp)))
-                Spacer(Modifier.width(10.dp))
-                Text(stringResource(R.string.app_name), Modifier.weight(1f),
+                if (onBack != null) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.ui_back))
+                    }
+                } else {
+                    Image(painterResource(R.drawable.app_logo), null,
+                        Modifier.size(32.dp).clip(RoundedCornerShape(6.dp)))
+                    Spacer(Modifier.width(10.dp))
+                }
+                Text(stringResource(if (onBack != null) R.string.ui_settings else R.string.app_name), Modifier.weight(1f),
                     style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (isUpdateDownloadInProgress && !isDownloadProgressVisible) {
@@ -83,8 +91,8 @@ fun CastScaffold(
                             tint = CastColors.Accent, modifier = Modifier.size(20.dp))
                     }
                 }
-                IconButton(onClick = onUploadLogs, enabled = !isLogUploadInProgress) {
-                    Icon(Icons.Default.CloudUpload, stringResource(R.string.session_action_upload_logs),
+                if (onBack == null) IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Default.Settings, stringResource(R.string.ui_settings),
                         modifier = Modifier.size(20.dp))
                 }
             }
@@ -94,7 +102,7 @@ fun CastScaffold(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     content()
-                    Text(stringResource(R.string.ui_version, appVersionName.removePrefix("v")),
+                    if (showVersion) Text(stringResource(R.string.ui_version, appVersionName.removePrefix("v")),
                         color = CastColors.Subtle, style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(top = 2.dp, bottom = 8.dp))
                 }

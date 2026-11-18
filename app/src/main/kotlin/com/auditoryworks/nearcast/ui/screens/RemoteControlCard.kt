@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -23,10 +24,7 @@ import com.auditoryworks.nearcast.ui.components.CastDarkDialogBars
 import com.auditoryworks.nearcast.ui.components.CastStatusDot
 import com.auditoryworks.nearcast.ui.theme.CastColors
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
-    onOpenSettings: () -> Unit, onHelp: () -> Unit, onRetry: () -> Unit) {
+private fun remoteControlStatus(state: RemoteControlState): Int {
     val receiverStatus = if (state.sourceReady) state.receiverFeedback?.let { feedback ->
         when (feedback.diagnosticReason) {
             "RECEIVER_INPUT_DISABLED" -> R.string.remote_rx_master_off
@@ -43,7 +41,7 @@ fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
             }
         }
     } else null
-    val status = when {
+    return when {
         !state.enabled -> R.string.remote_status_off
         !state.supported -> R.string.remote_status_unsupported
         !state.permissionEnabled -> R.string.remote_status_permission
@@ -62,6 +60,13 @@ fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
         !state.appReady -> R.string.remote_status_connecting
         else -> R.string.remote_status_ready
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
+    onOpenSettings: () -> Unit, onHelp: () -> Unit, onRetry: () -> Unit) {
+    val status = remoteControlStatus(state)
     CastInsetPanel {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -97,11 +102,42 @@ fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
     }
 }
 
+@Composable
+fun RemoteControlSummary(state: RemoteControlState, onSettings: () -> Unit,
+    onPermission: () -> Unit, onRetry: () -> Unit) {
+    val needsPermission = state.supported && state.enabled && (!state.permissionEnabled || !state.serviceConnected)
+    val needsRetry = state.enabled && (state.cleanupPending || state.calibration == CalibrationState.FAILED || state.disabledReason == "INPUT_SESSION_FAULT")
+    val status = remoteControlStatus(state)
+    val text = when (status) {
+        R.string.remote_status_off -> R.string.ui_remote_off
+        R.string.remote_status_permission, R.string.remote_status_service -> R.string.ui_remote_permission
+        R.string.remote_status_active -> R.string.ui_remote_active
+        R.string.remote_status_calibrating -> R.string.ui_remote_calibrating
+        R.string.remote_status_ready -> R.string.ui_remote_ready
+        R.string.remote_status_receiver, R.string.remote_rx_permission, R.string.remote_rx_not_requested,
+        R.string.remote_rx_master_off -> R.string.ui_remote_wait_receiver
+        else -> R.string.ui_remote_attention
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Icon(Icons.Default.TouchApp, null, Modifier.size(20.dp), tint = CastColors.Accent)
+        Column(Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }) {
+            Text(stringResource(R.string.remote_title), style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(text), style = MaterialTheme.typography.bodySmall,
+                color = if (status == R.string.remote_status_active) CastColors.Success else CastColors.Muted)
+        }
+        TextButton(onClick = when { needsPermission -> onPermission; needsRetry -> onRetry; else -> onSettings }) {
+            Text(stringResource(when { needsPermission -> R.string.ui_enable; needsRetry -> R.string.ui_retry; else -> R.string.ui_settings }))
+        }
+    }
+}
+
 enum class PermissionDialog { REMOTE_EXPLANATION, REMOTE_NOT_GRANTED, REMOTE_HELP, SETTINGS_UNAVAILABLE, AUDIO_EXPLANATION, AUDIO_DENIED, AUDIO_PERMANENT }
 
 @Composable
 fun CapturePermissionDialog(kind: PermissionDialog, onDismiss: () -> Unit, onOpenAccessibility: () -> Unit,
-    onSkipRemote: () -> Unit, onOpenAppSettings: () -> Unit, onRequestAudio: () -> Unit) {
+    onSkipRemote: () -> Unit, onOpenAppSettings: () -> Unit, onRequestAudio: () -> Unit,
+    sharingPending: Boolean = false) {
     val title = when (kind) {
         PermissionDialog.REMOTE_EXPLANATION -> R.string.remote_intro_title
         PermissionDialog.REMOTE_NOT_GRANTED -> R.string.remote_not_granted_title
@@ -136,7 +172,7 @@ fun CapturePermissionDialog(kind: PermissionDialog, onDismiss: () -> Unit, onOpe
             }
         }, dismissButton = {
             if (kind in setOf(PermissionDialog.REMOTE_EXPLANATION, PermissionDialog.REMOTE_NOT_GRANTED)) {
-                TextButton(onClick = onSkipRemote) { Text(stringResource(R.string.remote_cast_only)) }
+                TextButton(onClick = onSkipRemote) { Text(stringResource(if (sharingPending) R.string.remote_cast_only else R.string.ui_not_now)) }
             } else TextButton(onClick = onDismiss) { Text(stringResource(R.string.permission_close)) }
         })
 }

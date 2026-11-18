@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CalibrationAndPermissionTest {
+    @Test fun ordinarySharingDoesNotWaitForOptionalRemoteControlPermission() {
+        val flow = RemotePermissionFlow()
+        assertEquals(PermissionAction.START_CAPTURE, flow.start("cast", true, false, explainRemote = false))
+        assertEquals(PermissionAction.SHOW_EXPLANATION, flow.start("cast", true, false))
+        flow.openSettings("cast", resumeCapture = false)
+        assertEquals(PermissionAction.NONE, flow.returnFromSettings("cast", true))
+    }
+
     @Test fun challengeNeedsAllFourFreshMarkersInTwoConsecutiveFrames() {
         val challenge = DisplayChallenge("0123456789abcdef", 1080, 2400, 7, 0)
         fun pixel(x: Int, y: Int): Int {

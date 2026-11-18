@@ -5,8 +5,8 @@ class RemotePermissionFlow {
     private var explainedSession: String? = null
     private var settingsSession: String? = null
     private var resumeCapture = false
-    fun start(session: String, enabled: Boolean, ready: Boolean): PermissionAction {
-        if (enabled && !ready && explainedSession != session) {
+    fun start(session: String, enabled: Boolean, ready: Boolean, explainRemote: Boolean = true): PermissionAction {
+        if (explainRemote && enabled && !ready && explainedSession != session) {
             explainedSession = session
             return PermissionAction.SHOW_EXPLANATION
         }

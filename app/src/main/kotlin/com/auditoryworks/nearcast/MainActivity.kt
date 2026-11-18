@@ -41,7 +41,9 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.auditoryworks.nearcast.touchback.*
 import com.auditoryworks.nearcast.discovery.*
-import com.auditoryworks.nearcast.ui.screens.DeviceDiscoveryBottomSheet
+import com.auditoryworks.nearcast.ui.screens.ReceiverConnectionSheet
+import com.auditoryworks.nearcast.ui.screens.ConnectionTab
+import com.auditoryworks.nearcast.ui.screens.SettingsScreen
 import com.auditoryworks.nearcast.ui.screens.CapturePermissionDialog
 import com.auditoryworks.nearcast.ui.screens.PermissionDialog
 import com.auditoryworks.nearcast.diagnostics.LogUploadManager
@@ -104,7 +106,7 @@ class MainActivity : ComponentActivity() {
 
     private var webRtcManager: WebRtcManager? = null
     private var currentScreen by mutableStateOf(AppScreen.HOME)
-    private var statusText by mutableStateOf("Ready")
+    private var statusText by mutableStateOf("")
     private val serverUrl = "https://cast.nearhub.us/"
     private var pairCode by mutableStateOf("")
     private var sessionState by mutableStateOf(CastSessionState())
@@ -120,7 +122,9 @@ class MainActivity : ComponentActivity() {
     private var startCaptureAfterPermissions: (() -> Unit)? = null
     private val permissionPrefs get() = getSharedPreferences("permission-ui", MODE_PRIVATE)
     private var showLogUploadDialog by mutableStateOf(false)
-    private var showDiscovery by mutableStateOf(false)
+    private var showSettings by mutableStateOf(false)
+    private var manageReceiver by mutableStateOf(false)
+    private var connectionTab by mutableStateOf(ConnectionTab.CODE)
     private var discoveryRevision by mutableStateOf(0)
     private var discoverySnapshot by mutableStateOf(DiscoverySnapshot())
     private var selectedLocalInstance by mutableStateOf<String?>(null)
@@ -135,6 +139,9 @@ class MainActivity : ComponentActivity() {
     private var isLogUploadInProgress by mutableStateOf(false)
 
     private var updateInfo by mutableStateOf<AppUpdateInfo?>(null)
+    private var showUpdateDialog by mutableStateOf(false)
+    private var isCheckingUpdate by mutableStateOf(false)
+    private var updateMessage by mutableStateOf("")
     private var isDownloadingUpdate by mutableStateOf(false)
     private var isDownloadProgressVisible by mutableStateOf(false)
     private var downloadProgress by mutableStateOf(0f)
@@ -144,6 +151,7 @@ class MainActivity : ComponentActivity() {
         selectedLocalInstance = savedInstanceState?.getString("local-instance")
         selectedLocalId = savedInstanceState?.getString("local-device-id")
         selectedLocalName = savedInstanceState?.getString("local-name").orEmpty()
+        connectionTab = ConnectionTab.entries.firstOrNull { it.name == savedInstanceState?.getString("connection-tab") } ?: ConnectionTab.CODE
         SessionTraceRecorder.record(TAG, "Activity created")
 
         // A foreground service keeps the process alive after the task is swiped away. Restore the
@@ -164,25 +172,42 @@ class MainActivity : ComponentActivity() {
         setContent {
             ScreenCastTheme {
                 val receiverAction by receiverActions.state.collectAsStateWithLifecycle()
-                val needsDiscovery = showDiscovery || selectedLocalInstance != null && currentScreen == AppScreen.HOME
+                val needsDiscovery = currentScreen == AppScreen.HOME && (!showSettings || selectedLocalInstance != null) || receiverAction.device != null
                 LaunchedEffect(needsDiscovery, discoveryRevision) {
                     if (needsDiscovery) repeatOnLifecycle(Lifecycle.State.STARTED) {
                         try { nsdDiscovery.discoverServices().collect { snapshot -> discoverySnapshot = snapshot; receiverActions.devicesChanged() } }
                         finally { receiverActions.cancel(); discoverySnapshot = DiscoverySnapshot() }
                     }
                 }
-                if (showDiscovery) DeviceDiscoveryBottomSheet(discoverySnapshot, receiverAction,
-                    onSelect = receiverActions::select, onConfirm = receiverActions::confirm,
+                LaunchedEffect(receiverAction, currentScreen, showSettings, isJoining, manageReceiver) {
+                    if (receiverAction.phase == ReceiverPhase.SHOWN && currentScreen == AppScreen.HOME && !showSettings && !isJoining && !manageReceiver) {
+                        val requested = receiverAction.device
+                        val current = requested?.let { nsdDiscovery.current(it.instance) }
+                        val pin = try { requested?.deviceId?.let(receiverPins::get) } catch (_: TrustStorageFailure) { null }
+                        val ready = receiverAction.localCodeReceiver(current, pin)
+                        if (ready != null) selectLocalReceiver(ready)
+                        else {
+                            statusText = getString(if (current?.localReady == false) R.string.local_unavailable else R.string.local_trust_required)
+                            receiverActions.cancel()
+                        }
+                    }
+                }
+                val preparingReceiver = receiverAction.device?.instance?.takeIf {
+                    receiverAction.phase in setOf(ReceiverPhase.CHECKING, ReceiverPhase.PREPARING, ReceiverPhase.SHOWING)
+                }
+                if (receiverAction.device != null && (manageReceiver || preparingReceiver == null && receiverAction.phase != ReceiverPhase.SHOWN) &&
+                    currentScreen == AppScreen.HOME && !showSettings && !isJoining) ReceiverConnectionSheet(receiverAction,
+                    onConfirm = receiverActions::confirm,
                     onTrust = receiverActions::retryTrust, onCode = receiverActions::showCode,
-                    onForget = receiverActions::forget, onBack = receiverActions::cancel,
-                    onRefresh = { receiverActions.cancel(); discoverySnapshot = DiscoverySnapshot(scanning = true); discoveryRevision++ },
-                    onSettings = { openAppSettings() },
-                    onLocalEntry = { device ->
-                        selectedLocalInstance = device.instance; selectedLocalId = device.deviceId; selectedLocalName = device.name
-                        pairCode = ""; receiverActions.cancel(); showDiscovery = false; statusText = getString(R.string.local_enter_code)
+                    onForget = {
+                        if (selectedLocalId != null && selectedLocalId == receiverAction.device?.deviceId) {
+                            selectedLocalInstance = null; selectedLocalId = null; selectedLocalName = ""; pairCode = ""
+                        }
+                        receiverActions.forget()
                     },
-                    onManualEntry = { useCloud(); receiverActions.cancel(); showDiscovery = false },
-                    onDismiss = { receiverActions.cancel(); showDiscovery = false })
+                    onLocalEntry = ::selectLocalReceiver,
+                    onManualEntry = { useCloud(); receiverActions.cancel(); manageReceiver = false },
+                    onDismiss = { receiverActions.cancel(); manageReceiver = false }, manageDevice = manageReceiver)
                 val accessState by RemoteControlAccess.state.collectAsStateWithLifecycle()
                 val displayedRemoteState = if (webRtcManager == null) accessState else remoteControlState
                 val mediaProjectionLauncher = rememberLauncherForActivityResult(
@@ -260,38 +285,55 @@ class MainActivity : ComponentActivity() {
                         notificationPermissionLauncher, mediaProjectionLauncher)
                 }
 
-                when (currentScreen) {
-                    AppScreen.HOME -> HomeScreen(
-                        pairCode = pairCode,
-                        statusText = statusText,
-                        appVersionName = BuildConfig.VERSION_NAME,
-                        isLogUploadInProgress = isLogUploadInProgress,
-                        isUpdateDownloadInProgress = isDownloadingUpdate,
-                        isDownloadProgressVisible = isDownloadProgressVisible,
-                        onPairCodeChange = { pairCode = it },
-                        onJoin = { joinRoom() },
-                        onUploadLogs = {
-                            SessionTraceRecorder.record(TAG, "Open log upload dialog from Home")
-                            showLogUploadDialog = true
-                        },
-                        onShowDownloadProgress = { isDownloadProgressVisible = true },
+                if (showSettings) {
+                    SettingsScreen(
                         remoteControlState = displayedRemoteState,
-                        onRemoteEnabled = RemoteControlAccess::setEnabled,
+                        onRemoteEnabled = { enabled ->
+                            RemoteControlAccess.setEnabled(enabled)
+                            if (enabled && !RemoteControlAccess.state.value.permissionEnabled) {
+                                remoteSettingsResumeCapture = false
+                                permissionDialog = PermissionDialog.REMOTE_EXPLANATION
+                            }
+                        },
                         onRemoteSettings = { remoteSettingsResumeCapture = false; permissionDialog = PermissionDialog.REMOTE_EXPLANATION },
                         onRemoteHelp = { permissionDialog = PermissionDialog.REMOTE_HELP },
                         onRemoteRetry = { webRtcManager?.retryRemoteControl() ?: RemoteControlAccess.retryCleanup() },
-                        onDiscoverDevices = { showDiscovery = true },
+                        isLogUploadInProgress = isLogUploadInProgress,
+                        onUploadLogs = { showLogUploadDialog = true },
+                        isCheckingUpdate = isCheckingUpdate,
+                        availableVersion = updateInfo?.version,
+                        updateMessage = updateMessage,
+                        onCheckUpdate = ::checkForUpdatesFromSettings,
+                        isUpdateDownloadInProgress = isDownloadingUpdate,
+                        isDownloadProgressVisible = isDownloadProgressVisible,
+                        onShowDownloadProgress = { isDownloadProgressVisible = true },
+                        onBack = { showSettings = false })
+                } else when (currentScreen) {
+                    AppScreen.HOME -> HomeScreen(
+                        pairCode = pairCode,
+                        statusText = statusText.takeUnless { it in setOf("Ready", getString(R.string.local_enter_code), getString(R.string.cloud_enter_code)) }.orEmpty(),
+                        tab = connectionTab,
+                        onTabSelected = { receiverActions.cancel(); manageReceiver = false; connectionTab = it; statusText = "" },
+                        snapshot = discoverySnapshot,
+                        onSelectReceiver = { if (!isJoining) { manageReceiver = false; statusText = ""; receiverActions.select(it) } },
+                        onRefresh = { receiverActions.cancel(); discoverySnapshot = DiscoverySnapshot(scanning = true); discoveryRevision++; statusText = "" },
+                        onNetworkSettings = ::openAppSettings,
+                        isUpdateDownloadInProgress = isDownloadingUpdate,
+                        isDownloadProgressVisible = isDownloadProgressVisible,
+                        onPairCodeChange = { pairCode = it; statusText = "" },
+                        onJoin = ::joinRoom,
+                        onOpenSettings = { receiverActions.cancel(); showSettings = true },
+                        onShowDownloadProgress = { isDownloadProgressVisible = true },
                         localReceiverName = if (selectedLocalInstance != null) selectedLocalName else null,
-                        localReceiverAddress = discoverySnapshot.devices.firstOrNull { it.instance == selectedLocalInstance && it.deviceId == selectedLocalId }?.let { "${it.addresses.first()}:${it.port}" },
                         isJoining = isJoining,
                         onUseCloud = ::useCloud,
-                        onCancelJoin = { leaveRoom() }
-                    )
-
+                        onCancelJoin = ::leaveRoom,
+                        preparingReceiver = preparingReceiver,
+                        onCancelPreparation = receiverActions::cancel,
+                        onReceiverOptions = { if (!isJoining) { manageReceiver = true; receiverActions.select(it) } })
                     AppScreen.SESSION -> SessionScreen(
                         statusText = statusText,
                         sessionState = sessionState,
-                        isLogUploadInProgress = isLogUploadInProgress,
                         isUpdateDownloadInProgress = isDownloadingUpdate,
                         isDownloadProgressVisible = isDownloadProgressVisible,
                         onStartCast = {
@@ -299,10 +341,10 @@ class MainActivity : ComponentActivity() {
                             if (manager != null && manager.sessionState.value.isP2PReady && !manager.sessionState.value.isCaptureBusy) {
                                 cancelPendingPermissions()
                                 pendingStartSession = manager.permissionSessionKey
-                                remoteSettingsResumeCapture = true
+                                remoteSettingsResumeCapture = false
                                 val access = RemoteControlAccess.state.value
                                 when (ActiveCastingSession.remotePermissionFlow.start(manager.permissionSessionKey, access.enabled && access.supported,
-                                    access.permissionEnabled && access.serviceConnected)) {
+                                    access.permissionEnabled && access.serviceConnected, explainRemote = false)) {
                                     PermissionAction.SHOW_EXPLANATION -> permissionDialog = PermissionDialog.REMOTE_EXPLANATION
                                     else -> startCaptureAfterPermissions?.invoke()
                                 }
@@ -314,18 +356,12 @@ class MainActivity : ComponentActivity() {
                             cancelPendingPermissions()
                             webRtcManager?.stopScreenCapture()
                         },
-                        onLeave = { leaveRoom() },
-                        onUploadLogs = {
-                            SessionTraceRecorder.record(TAG, "Open log upload dialog from Session")
-                            showLogUploadDialog = true
-                        },
+                        onLeave = ::leaveRoom,
+                        onOpenSettings = { showSettings = true },
                         onShowDownloadProgress = { isDownloadProgressVisible = true },
                         remoteControlState = displayedRemoteState,
-                        onRemoteEnabled = RemoteControlAccess::setEnabled,
                         onRemoteSettings = { remoteSettingsResumeCapture = false; permissionDialog = PermissionDialog.REMOTE_EXPLANATION },
-                        onRemoteHelp = { permissionDialog = PermissionDialog.REMOTE_HELP },
-                        onRemoteRetry = { webRtcManager?.retryRemoteControl() }
-                    )
+                        onRemoteRetry = { webRtcManager?.retryRemoteControl() })
                 }
 
                 permissionDialog?.let { kind ->
@@ -351,7 +387,7 @@ class MainActivity : ComponentActivity() {
                                 permissionPrefs.edit().putBoolean("audio-requested", true).apply()
                                 recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
-                        })
+                        }, sharingPending = isPendingStartValid())
                 }
 
                 if (showLogUploadDialog) {
@@ -372,12 +408,13 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                updateInfo?.let { info ->
+                if (showUpdateDialog) updateInfo?.let { info ->
                     UpdateDialog(
                         updateInfo = info,
-                        onDismiss = { updateInfo = null },
+                        onDismiss = { showUpdateDialog = false },
                         onUpdate = {
                             updateInfo = null
+                            showUpdateDialog = false
                             isDownloadingUpdate = true
                             isDownloadProgressVisible = true
                             downloadProgress = 0f
@@ -749,13 +786,45 @@ class MainActivity : ComponentActivity() {
     private fun useCloud() {
         if (isJoining) leaveRoom()
         selectedLocalInstance = null; selectedLocalId = null; selectedLocalName = ""; pairCode = ""
-        statusText = getString(R.string.cloud_enter_code)
+        statusText = ""; connectionTab = ConnectionTab.CODE
+    }
+
+    private fun selectLocalReceiver(device: ReceiverDevice) {
+        val current = nsdDiscovery.current(device.instance)
+        if (current?.routeKey != device.routeKey || current.capabilities != device.capabilities || current.localReady == false) {
+            statusText = getString(R.string.discovery_offline); receiverActions.cancel(); return
+        }
+        val action = receiverActions.state.value
+        val pin = try { device.deviceId?.let(receiverPins::get) } catch (_: TrustStorageFailure) { null }
+        if (pin == null || !validFingerprint(pin) || pin != action.fingerprint || action.candidate != null ||
+            action.device?.routeKey != device.routeKey ||
+            action.phase !in setOf(ReceiverPhase.SHOWN, ReceiverPhase.UNAVAILABLE, ReceiverPhase.RATE_LIMITED, ReceiverPhase.UNSUPPORTED, ReceiverPhase.ERROR)) {
+            statusText = getString(R.string.local_trust_required); receiverActions.cancel(); return
+        }
+        selectedLocalInstance = device.instance; selectedLocalId = device.deviceId; selectedLocalName = device.name
+        pairCode = ""; statusText = ""; connectionTab = ConnectionTab.CODE
+        manageReceiver = false
+        receiverActions.cancel()
+    }
+
+    private fun checkForUpdatesFromSettings() {
+        if (isCheckingUpdate || isDownloadingUpdate) return
+        if (updateInfo != null) { showUpdateDialog = true; return }
+        isCheckingUpdate = true; updateMessage = ""
+        lifecycleScope.launch {
+            try {
+                updateInfo = UpdateManager.checkUpdate()
+                if (updateInfo != null) showUpdateDialog = true
+                else updateMessage = getString(R.string.ui_update_none)
+            } finally { isCheckingUpdate = false }
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("local-instance", selectedLocalInstance)
         outState.putString("local-device-id", selectedLocalId)
         outState.putString("local-name", selectedLocalName)
+        outState.putString("connection-tab", connectionTab.name)
         super.onSaveInstanceState(outState)
     }
 
@@ -804,7 +873,7 @@ class MainActivity : ComponentActivity() {
         sessionState = CastSessionState()
         lastAudioModeStatus = ""
         currentScreen = AppScreen.HOME
-        statusText = "Ready"
+        statusText = ""
     }
 
     override fun onDestroy() {
