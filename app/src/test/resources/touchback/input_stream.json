@@ -1,0 +1,973 @@
+{
+  "format": "input-sample-v1",
+  "wire": {
+    "format": "input-sample-v1",
+    "byteOrder": "big-endian",
+    "streamHeaderBytes": 16,
+    "typeBytes": 1,
+    "maxDataBytes": 4096,
+    "inputTypes": {
+      "touch": 1,
+      "mouse": 2
+    },
+    "touch": {
+      "recordBytes": 7,
+      "maxContacts": 256,
+      "sampling": "complete",
+      "phases": {
+        "down": 0,
+        "move": 1,
+        "up": 2,
+        "cancel": 3
+      },
+      "fields": [
+        {
+          "name": "contactId",
+          "offset": 0,
+          "bytes": 2,
+          "type": "uint16"
+        },
+        {
+          "name": "phase",
+          "offset": 2,
+          "bytes": 1,
+          "type": "uint8"
+        },
+        {
+          "name": "x",
+          "offset": 3,
+          "bytes": 2,
+          "type": "uint16"
+        },
+        {
+          "name": "y",
+          "offset": 5,
+          "bytes": 2,
+          "type": "uint16"
+        }
+      ]
+    },
+    "mouse": {
+      "buttons": {
+        "left": 1,
+        "right": 2,
+        "middle": 4,
+        "back": 8,
+        "forward": 16
+      },
+      "modifiers": {
+        "shift": 1,
+        "ctrl": 2,
+        "alt": 4,
+        "meta": 8
+      },
+      "wheelUnits": {
+        "detent120": 0,
+        "regionQ16_16": 1
+      },
+      "wheelPhases": {
+        "none": 0,
+        "began": 1,
+        "changed": 2,
+        "ended": 3,
+        "cancelled": 4
+      },
+      "records": [
+        {
+          "name": "move",
+          "kind": 0,
+          "bytes": 11,
+          "fields": [
+            {
+              "name": "eventKind",
+              "offset": 0,
+              "bytes": 1,
+              "type": "uint8"
+            },
+            {
+              "name": "modifiers",
+              "offset": 1,
+              "bytes": 2,
+              "type": "uint16"
+            },
+            {
+              "name": "buttons",
+              "offset": 3,
+              "bytes": 4,
+              "type": "uint32"
+            },
+            {
+              "name": "x",
+              "offset": 7,
+              "bytes": 2,
+              "type": "uint16"
+            },
+            {
+              "name": "y",
+              "offset": 9,
+              "bytes": 2,
+              "type": "uint16"
+            }
+          ]
+        },
+        {
+          "name": "buttons",
+          "kind": 1,
+          "bytes": 11,
+          "fields": [
+            {
+              "name": "eventKind",
+              "offset": 0,
+              "bytes": 1,
+              "type": "uint8"
+            },
+            {
+              "name": "modifiers",
+              "offset": 1,
+              "bytes": 2,
+              "type": "uint16"
+            },
+            {
+              "name": "buttons",
+              "offset": 3,
+              "bytes": 4,
+              "type": "uint32"
+            },
+            {
+              "name": "x",
+              "offset": 7,
+              "bytes": 2,
+              "type": "uint16"
+            },
+            {
+              "name": "y",
+              "offset": 9,
+              "bytes": 2,
+              "type": "uint16"
+            }
+          ]
+        },
+        {
+          "name": "wheel",
+          "kind": 2,
+          "bytes": 21,
+          "fields": [
+            {
+              "name": "eventKind",
+              "offset": 0,
+              "bytes": 1,
+              "type": "uint8"
+            },
+            {
+              "name": "modifiers",
+              "offset": 1,
+              "bytes": 2,
+              "type": "uint16"
+            },
+            {
+              "name": "buttons",
+              "offset": 3,
+              "bytes": 4,
+              "type": "uint32"
+            },
+            {
+              "name": "x",
+              "offset": 7,
+              "bytes": 2,
+              "type": "uint16"
+            },
+            {
+              "name": "y",
+              "offset": 9,
+              "bytes": 2,
+              "type": "uint16"
+            },
+            {
+              "name": "wheelUnit",
+              "offset": 11,
+              "bytes": 1,
+              "type": "uint8"
+            },
+            {
+              "name": "wheelPhase",
+              "offset": 12,
+              "bytes": 1,
+              "type": "uint8"
+            },
+            {
+              "name": "wheelX",
+              "offset": 13,
+              "bytes": 4,
+              "type": "int32"
+            },
+            {
+              "name": "wheelY",
+              "offset": 17,
+              "bytes": 4,
+              "type": "int32"
+            }
+          ]
+        },
+        {
+          "name": "cancel",
+          "kind": 3,
+          "bytes": 1,
+          "fields": [
+            {
+              "name": "eventKind",
+              "offset": 0,
+              "bytes": 1,
+              "type": "uint8"
+            }
+          ]
+        },
+        {
+          "name": "modifiers",
+          "kind": 4,
+          "bytes": 3,
+          "fields": [
+            {
+              "name": "eventKind",
+              "offset": 0,
+              "bytes": 1,
+              "type": "uint8"
+            },
+            {
+              "name": "modifiers",
+              "offset": 1,
+              "bytes": 2,
+              "type": "uint16"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "limits": {
+    "maxDataBytes": 4096,
+    "touch": {
+      "maxContacts": 10
+    },
+    "mouse": {
+      "buttonsMask": 31,
+      "modifierMask": 15,
+      "allowChords": true,
+      "wheelUnits": [
+        "detent120",
+        "regionQ16_16"
+      ],
+      "continuousScroll": true
+    }
+  },
+  "cases": [
+    {
+      "name": "touch_single",
+      "valid": true,
+      "frames": [
+        {
+          "hex": "415801030018011000010001000000070000000100000000000003e80100070027104e2085fb",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 1,
+            "cursor": 1000,
+            "dataBytes": 8,
+            "frameBytes": 38,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 0,
+                "x": 10000,
+                "y": 20000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "415801030018011000020001000000070000000200000000000007d0010007012af85208828c",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 2,
+            "cursor": 2000,
+            "dataBytes": 8,
+            "frameBytes": 38,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 1,
+                "x": 11000,
+                "y": 21000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103001801100003000100000007000000030000000000000bb8010007022af852085f7e",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 3,
+            "cursor": 3000,
+            "dataBytes": 8,
+            "frameBytes": 38,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 2,
+                "x": 11000,
+                "y": 21000
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "touch_two",
+      "valid": true,
+      "frames": [
+        {
+          "hex": "41580103001f011000010001000000070000000100000000000003e80100070027104e2000080075309c403c56",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 1,
+            "cursor": 1000,
+            "dataBytes": 15,
+            "frameBytes": 45,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 0,
+                "x": 10000,
+                "y": 20000
+              },
+              {
+                "contactId": 8,
+                "phase": 0,
+                "x": 30000,
+                "y": 40000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103001f011000020001000000070000000200000000000007d0010007012af852080008017918a028cf9d",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 2,
+            "cursor": 2000,
+            "dataBytes": 15,
+            "frameBytes": 45,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 1,
+                "x": 11000,
+                "y": 21000
+              },
+              {
+                "contactId": 8,
+                "phase": 1,
+                "x": 31000,
+                "y": 41000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103001f01100003000100000007000000030000000000000bb8010007022af852080008017918a0287e05",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 3,
+            "cursor": 3000,
+            "dataBytes": 15,
+            "frameBytes": 45,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 2,
+                "x": 11000,
+                "y": 21000
+              },
+              {
+                "contactId": 8,
+                "phase": 1,
+                "x": 31000,
+                "y": 41000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103001801100004000100000007000000040000000000000fa0010008027918a0284ac2",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 4,
+            "cursor": 4000,
+            "dataBytes": 8,
+            "frameBytes": 38,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 8,
+                "phase": 2,
+                "x": 31000,
+                "y": 41000
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "touch_five",
+      "valid": true,
+      "frames": [
+        {
+          "hex": "415801030034011000010001000000070000000100000000000003e80100010013880fa000020027101f400003003a982ee00004004e203e8000050061a84e20545c",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 1,
+            "cursor": 1000,
+            "dataBytes": 36,
+            "frameBytes": 66,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 1,
+                "phase": 0,
+                "x": 5000,
+                "y": 4000
+              },
+              {
+                "contactId": 2,
+                "phase": 0,
+                "x": 10000,
+                "y": 8000
+              },
+              {
+                "contactId": 3,
+                "phase": 0,
+                "x": 15000,
+                "y": 12000
+              },
+              {
+                "contactId": 4,
+                "phase": 0,
+                "x": 20000,
+                "y": 16000
+              },
+              {
+                "contactId": 5,
+                "phase": 0,
+                "x": 25000,
+                "y": 20000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "415801030034011000020001000000070000000200000000000007d00100010113880fa000020127101f400003013a982ee00004014e203e8000050161a84e20beb1",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 2,
+            "cursor": 2000,
+            "dataBytes": 36,
+            "frameBytes": 66,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 1,
+                "phase": 1,
+                "x": 5000,
+                "y": 4000
+              },
+              {
+                "contactId": 2,
+                "phase": 1,
+                "x": 10000,
+                "y": 8000
+              },
+              {
+                "contactId": 3,
+                "phase": 1,
+                "x": 15000,
+                "y": 12000
+              },
+              {
+                "contactId": 4,
+                "phase": 1,
+                "x": 20000,
+                "y": 16000
+              },
+              {
+                "contactId": 5,
+                "phase": 1,
+                "x": 25000,
+                "y": 20000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103003401100003000100000007000000030000000000000bb80100010313880fa000020327101f400003033a982ee00004034e203e8000050361a84e204985",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 3,
+            "cursor": 3000,
+            "dataBytes": 36,
+            "frameBytes": 66,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 1,
+                "phase": 3,
+                "x": 5000,
+                "y": 4000
+              },
+              {
+                "contactId": 2,
+                "phase": 3,
+                "x": 10000,
+                "y": 8000
+              },
+              {
+                "contactId": 3,
+                "phase": 3,
+                "x": 15000,
+                "y": 12000
+              },
+              {
+                "contactId": 4,
+                "phase": 3,
+                "x": 20000,
+                "y": 16000
+              },
+              {
+                "contactId": 5,
+                "phase": 3,
+                "x": 25000,
+                "y": 20000
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "mixed",
+      "valid": true,
+      "frames": [
+        {
+          "hex": "41580103001f011000010001000000070000000100000000000003e80100070027104e2000080075309c403c56",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 1,
+            "cursor": 1000,
+            "dataBytes": 15,
+            "frameBytes": 45,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 0,
+                "x": 10000,
+                "y": 20000
+              },
+              {
+                "contactId": 8,
+                "phase": 0,
+                "x": 30000,
+                "y": 40000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103001c011000020001000000070000000200000000000007d002000000000000008000800069a0",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 2,
+            "cursor": 2000,
+            "dataBytes": 12,
+            "frameBytes": 42,
+            "inputType": "mouse",
+            "eventKind": 0,
+            "modifiers": 0,
+            "buttons": 0,
+            "x": 32768,
+            "y": 32768
+          }
+        },
+        {
+          "hex": "41580103001f01100003000100000007000000030000000000000bb8010007022af852080008017918a0287e05",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 3,
+            "cursor": 3000,
+            "dataBytes": 15,
+            "frameBytes": 45,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 7,
+                "phase": 2,
+                "x": 11000,
+                "y": 21000
+              },
+              {
+                "contactId": 8,
+                "phase": 1,
+                "x": 31000,
+                "y": 41000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103001c01100004000100000007000000040000000000000fa0020100000000000180008000593c",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 4,
+            "cursor": 4000,
+            "dataBytes": 12,
+            "frameBytes": 42,
+            "inputType": "mouse",
+            "eventKind": 1,
+            "modifiers": 0,
+            "buttons": 1,
+            "x": 32768,
+            "y": 32768
+          }
+        },
+        {
+          "hex": "41580103001801100005000100000007000000050000000000001388010008027918a028b2ad",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 5,
+            "cursor": 5000,
+            "dataBytes": 8,
+            "frameBytes": 38,
+            "inputType": "touch",
+            "records": [
+              {
+                "contactId": 8,
+                "phase": 2,
+                "x": 31000,
+                "y": 41000
+              }
+            ]
+          }
+        },
+        {
+          "hex": "41580103001c01100006000100000007000000060000000000001770020100000000000080008000908b",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 6,
+            "cursor": 6000,
+            "dataBytes": 12,
+            "frameBytes": 42,
+            "inputType": "mouse",
+            "eventKind": 1,
+            "modifiers": 0,
+            "buttons": 0,
+            "x": 32768,
+            "y": 32768
+          }
+        },
+        {
+          "hex": "41580103001401100007000100000007000000070000000000001b58020400027293",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 7,
+            "cursor": 7000,
+            "dataBytes": 4,
+            "frameBytes": 34,
+            "inputType": "mouse",
+            "eventKind": 4,
+            "modifiers": 2
+          }
+        },
+        {
+          "hex": "41580103001401100008000100000007000000080000000000001f4002040000a07e",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 8,
+            "cursor": 8000,
+            "dataBytes": 4,
+            "frameBytes": 34,
+            "inputType": "mouse",
+            "eventKind": 4,
+            "modifiers": 0
+          }
+        },
+        {
+          "hex": "4158010300120110000900010000000700000009000000000000232802031d03",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 9,
+            "cursor": 9000,
+            "dataBytes": 2,
+            "frameBytes": 32,
+            "inputType": "mouse",
+            "eventKind": 3
+          }
+        }
+      ]
+    },
+    {
+      "name": "mouse_wheel",
+      "valid": true,
+      "frames": [
+        {
+          "hex": "41580103001c011000010001000000070000000100000000000003e802000000000000008000800048e2",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 1,
+            "cursor": 1000,
+            "dataBytes": 12,
+            "frameBytes": 42,
+            "inputType": "mouse",
+            "eventKind": 0,
+            "modifiers": 0,
+            "buttons": 0,
+            "x": 32768,
+            "y": 32768
+          }
+        },
+        {
+          "hex": "415801030026011000020001000000070000000200000000000007d002020000000000008000800000000000000000000078ef3a",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 2,
+            "cursor": 2000,
+            "dataBytes": 22,
+            "frameBytes": 52,
+            "inputType": "mouse",
+            "eventKind": 2,
+            "modifiers": 0,
+            "buttons": 0,
+            "x": 32768,
+            "y": 32768,
+            "wheelUnit": 0,
+            "wheelPhase": 0,
+            "wheelX": 0,
+            "wheelY": 120
+          }
+        },
+        {
+          "hex": "41580103002601100003000100000007000000030000000000000bb8020200000000000080008000010100000000000000006f30",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 3,
+            "cursor": 3000,
+            "dataBytes": 22,
+            "frameBytes": 52,
+            "inputType": "mouse",
+            "eventKind": 2,
+            "modifiers": 0,
+            "buttons": 0,
+            "x": 32768,
+            "y": 32768,
+            "wheelUnit": 1,
+            "wheelPhase": 1,
+            "wheelX": 0,
+            "wheelY": 0
+          }
+        },
+        {
+          "hex": "41580103002601100004000100000007000000040000000000000fa00202000000000000800080000102fffff00000002000902e",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 4,
+            "cursor": 4000,
+            "dataBytes": 22,
+            "frameBytes": 52,
+            "inputType": "mouse",
+            "eventKind": 2,
+            "modifiers": 0,
+            "buttons": 0,
+            "x": 32768,
+            "y": 32768,
+            "wheelUnit": 1,
+            "wheelPhase": 2,
+            "wheelX": -4096,
+            "wheelY": 8192
+          }
+        },
+        {
+          "hex": "4158010300260110000500010000000700000005000000000000138802020000000000008000800001030000000000000000a711",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 5,
+            "cursor": 5000,
+            "dataBytes": 22,
+            "frameBytes": 52,
+            "inputType": "mouse",
+            "eventKind": 2,
+            "modifiers": 0,
+            "buttons": 0,
+            "x": 32768,
+            "y": 32768,
+            "wheelUnit": 1,
+            "wheelPhase": 3,
+            "wheelX": 0,
+            "wheelY": 0
+          }
+        },
+        {
+          "hex": "41580103001201100006000100000007000000060000000000001770020341b1",
+          "expectDecode": {
+            "streamId": 7,
+            "seqId": 6,
+            "cursor": 6000,
+            "dataBytes": 2,
+            "frameBytes": 32,
+            "inputType": "mouse",
+            "eventKind": 3
+          }
+        }
+      ]
+    },
+    {
+      "name": "frame_crc",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030018011000010001000000070000000100000000000003e80100070027104e2085fa"
+        }
+      ],
+      "expectError": "CRC"
+    },
+    {
+      "name": "frame_truncated",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030018011000010001000000070000000100000000000003e80100070027104e2085"
+        }
+      ],
+      "expectError": "length"
+    },
+    {
+      "name": "unknown_type",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030012011000010001000000070000000100000000000003e8ff0034bc"
+        }
+      ],
+      "expectError": "type"
+    },
+    {
+      "name": "touch_extra_byte",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030019011000010001000000070000000100000000000003e80100070027104e2000636b"
+        }
+      ],
+      "expectError": "length"
+    },
+    {
+      "name": "duplicate_contact",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "41580103001f011000010001000000070000000100000000000003e80100070027104e2000070027104e20f823"
+        }
+      ],
+      "expectError": "duplicate"
+    },
+    {
+      "name": "orphan_move",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030018011000010001000000070000000100000000000003e80100070127104e202faa"
+        }
+      ],
+      "expectError": "orphan"
+    },
+    {
+      "name": "missing_active",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "41580103001f011000010001000000070000000100000000000003e80100070027104e2000080027104e203d20"
+        },
+        {
+          "hex": "415801030018011000020001000000070000000200000000000007d00100070127104e2051ee"
+        }
+      ],
+      "expectError": "missing active"
+    },
+    {
+      "name": "sequence_gap",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030018011000010001000000070000000100000000000003e80100070027104e2085fb"
+        },
+        {
+          "hex": "41580103001801100003000100000007000000030000000000000bb80100070127104e2062ce"
+        }
+      ],
+      "expectError": "sequence"
+    },
+    {
+      "name": "implicit_buttons",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "41580103001c011000010001000000070000000100000000000003e8020000000000000180008000e2b3"
+        }
+      ],
+      "expectError": "implicit"
+    },
+    {
+      "name": "unknown_button",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "41580103001c011000010001000000070000000100000000000003e8020100000000002080008000981f"
+        }
+      ],
+      "expectError": "button"
+    },
+    {
+      "name": "unknown_modifier",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030014011000010001000000070000000100000000000003e802040010b868"
+        }
+      ],
+      "expectError": "modifier"
+    },
+    {
+      "name": "wheel_without_begin",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030026011000010001000000070000000100000000000003e80202000000000000800080000102000000000000007889ee"
+        }
+      ],
+      "expectError": "Began"
+    },
+    {
+      "name": "zero_detent",
+      "valid": false,
+      "frames": [
+        {
+          "hex": "415801030026011000010001000000070000000100000000000003e802020000000000008000800000000000000000000000df53"
+        }
+      ],
+      "expectError": "detent"
+    }
+  ]
+}

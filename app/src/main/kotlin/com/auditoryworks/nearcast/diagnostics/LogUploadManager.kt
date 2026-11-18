@@ -41,7 +41,7 @@ object LogUploadManager {
     private const val API_BASE_URL = "https://mosapi.auditoryworks.co/v1"
     private const val MAX_BYTES = 50L * 1024L * 1024L
     private const val LOGCAT_LINE_LIMIT = "20000"
-    private const val DEFAULT_DESCRIPTION = "NearCast logs"
+    private const val DEFAULT_DESCRIPTION = "NearHub Cast logs"
     private const val DEFAULT_EMAIL = "example@mail.com"
     private const val TRACE_FILE_NAME = "002-webrtc-flow.txt"
 
@@ -168,7 +168,7 @@ object LogUploadManager {
         }
 
         if (builder.isEmpty()) {
-            builder.append("No matching NearCast logcat entries were captured.\n")
+            builder.append("No matching NearHub Cast logcat entries were captured.\n")
         }
         error?.let {
             builder.append("\nlogcat capture warning: ").append(it).append('\n')

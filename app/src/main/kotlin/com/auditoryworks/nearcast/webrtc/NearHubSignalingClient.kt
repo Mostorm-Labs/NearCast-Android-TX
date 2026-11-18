@@ -2,6 +2,9 @@ package com.auditoryworks.nearcast.webrtc
 
 import android.util.Log
 import com.auditoryworks.nearcast.diagnostics.SessionTraceRecorder
+import com.auditoryworks.nearcast.discovery.LocalReceiverConnection
+import com.auditoryworks.nearcast.discovery.ReceiverKeyChanged
+import com.auditoryworks.nearcast.discovery.ReceiverTrustRevoked
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,6 +19,8 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "NearHubSignaling"
 
@@ -57,13 +62,18 @@ sealed class NearHubEvent {
  */
 class NearHubSignalingClient(
     private val baseUrl: String,
-    private val onStatusChange: (String) -> Unit
+    private val onStatusChange: (String) -> Unit,
+    private val localConnection: LocalReceiverConnection? = null
 ) : SignalingClient {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val client = OkHttpClient.Builder()
+    private val client = localConnection?.client ?: OkHttpClient.Builder()
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
     private var webSocket: WebSocket? = null
+    private val generation = AtomicLong()
+    private val terminal = AtomicBoolean()
+    private var trustSubscription: AutoCloseable? = null
+    @Volatile private var disposed = false
 
     var roomId: String? = null
         private set
@@ -78,19 +88,46 @@ class NearHubSignalingClient(
     override val events: SharedFlow<NearHubEvent> = _events
 
     override fun connect(token: String?) {
-        val url = buildString {
+        if (disposed) return
+        val owner = generation.incrementAndGet()
+        terminal.set(false); trustSubscription?.close(); webSocket?.cancel()
+        fun active() = !disposed && generation.get() == owner && !terminal.get()
+        fun failed(t: Throwable) {
+            if (!active() || !terminal.compareAndSet(false, true)) return
+            webSocket?.cancel()
+            if (localConnection != null) {
+                val causes = generateSequence(t) { it.cause }.toList()
+                val reason = when {
+                    causes.any { it is ReceiverKeyChanged } -> "NEARCAST_KEY_MISMATCH"
+                    causes.any { it is ReceiverTrustRevoked } -> "NEARCAST_TRUST_REVOKED"
+                    else -> "LOCAL_CONNECTION_FAILED"
+                }
+                // Preserve the actionable TLS/trust error before the terminal disconnect.
+                scope.launch {
+                    _events.emit(NearHubEvent.ServerError(reason, reason))
+                    _events.emit(NearHubEvent.Disconnected)
+                }
+            } else {
+                onStatusChange("Connection error: ${t.message}")
+                emit(NearHubEvent.Disconnected)
+            }
+        }
+        try { localConnection?.requireTrusted() } catch (error: Exception) { failed(error); return }
+        trustSubscription = localConnection?.onTrustChanged { failed(ReceiverTrustRevoked()) }
+        if (!active()) return
+        val url = localConnection?.endpoint ?: buildString {
             append(baseUrl.trimEnd('/'))
             append(if ('?' in baseUrl) "&" else "?")
             append("role=sender")
             val t = token ?: reconnectionToken
             if (t != null) append("&token=$t")
         }
-        Log.d(TAG, "Connecting to $url")
-        SessionTraceRecorder.record(TAG, "connect url=$url")
+        SessionTraceRecorder.record(TAG, "connect backend=${if (localConnection != null) "local" else "cloud"}")
 
         val request = Request.Builder().url(url).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!active()) { webSocket.cancel(); return }
                 Log.d(TAG, "WebSocket connected")
                 SessionTraceRecorder.record(TAG, "websocket open")
                 onStatusChange("Connected to server")
@@ -98,19 +135,18 @@ class NearHubSignalingClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "Received: ${text.take(200)}")
-                SessionTraceRecorder.record(TAG, "message ${text.take(120)}")
+                if (!active()) return
                 handleMessage(text)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket error: ${t.message}", t)
-                SessionTraceRecorder.record(TAG, "websocket failure: ${t.message}")
-                onStatusChange("Connection error: ${t.message}")
-                emit(NearHubEvent.Disconnected)
+                failed(t)
             }
 
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (!active() || !terminal.compareAndSet(false, true)) return
                 Log.d(TAG, "WebSocket closed: $code $reason")
                 SessionTraceRecorder.record(TAG, "websocket closed code=$code reason=$reason")
                 onStatusChange("Disconnected")
@@ -120,7 +156,7 @@ class NearHubSignalingClient(
     }
 
     override fun join(pairCode: String, name: String) {
-        SessionTraceRecorder.record(TAG, "join pairCode=$pairCode name=$name")
+        SessionTraceRecorder.record(TAG, "join requested")
         send(JSONObject().apply {
             put("type", "join")
             put("pairCode", pairCode)
@@ -190,8 +226,12 @@ class NearHubSignalingClient(
     }
 
     override fun dispose() {
+        disposed = true; generation.incrementAndGet()
+        trustSubscription?.close(); trustSubscription = null
         SessionTraceRecorder.record(TAG, "dispose")
         webSocket?.close(1000, "Client closing")
+        webSocket?.cancel(); webSocket = null
+        localConnection?.close()
         scope.cancel()
     }
 
@@ -303,9 +343,12 @@ class NearHubSignalingClient(
     }
 
     private fun send(json: JSONObject) {
+        if (disposed || terminal.get()) return
+        try { localConnection?.requireTrusted() } catch (_: Exception) {
+            webSocket?.cancel(); emit(NearHubEvent.ServerError("NEARCAST_TRUST_REVOKED", "NEARCAST_TRUST_REVOKED")); return
+        }
         val text = json.toString()
-        Log.d(TAG, "Sending: ${text.take(200)}")
-        SessionTraceRecorder.record(TAG, "send ${text.take(120)}")
+        SessionTraceRecorder.record(TAG, "send type=${json.optString("type")}")
         webSocket?.send(text)
     }
 

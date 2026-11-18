@@ -168,6 +168,7 @@ android {
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -192,6 +193,7 @@ android {
 
     buildTypes {
         getByName("debug") {
+            providers.gradleProperty("debugAppIdSuffix").orNull?.let { applicationIdSuffix = it }
             // The online update APK is release-signed. When the local release
             // keystore is available, sign debug builds with it as well so a
             // debug build can be upgraded in place during OTA testing.
@@ -277,4 +279,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

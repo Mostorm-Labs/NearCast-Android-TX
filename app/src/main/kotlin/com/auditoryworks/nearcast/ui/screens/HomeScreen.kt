@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -22,15 +24,22 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import com.auditoryworks.nearcast.touchback.RemoteControlState
 import com.auditoryworks.nearcast.R
 
 @Composable
@@ -44,7 +53,18 @@ fun HomeScreen(
     onPairCodeChange: (String) -> Unit,
     onJoin: () -> Unit,
     onUploadLogs: () -> Unit,
-    onShowDownloadProgress: () -> Unit
+    onShowDownloadProgress: () -> Unit,
+    remoteControlState: RemoteControlState,
+    onRemoteEnabled: (Boolean) -> Unit,
+    onRemoteSettings: () -> Unit,
+    onRemoteHelp: () -> Unit,
+    onRemoteRetry: () -> Unit,
+    onDiscoverDevices: () -> Unit,
+    localReceiverName: String? = null,
+    localReceiverAddress: String? = null,
+    isJoining: Boolean = false,
+    onUseCloud: () -> Unit = {},
+    onCancelJoin: () -> Unit = {}
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -80,6 +100,7 @@ fun HomeScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
@@ -101,21 +122,28 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "Enter the pair code shown on the receiver",
+                    text = stringResource(if (localReceiverName != null) R.string.local_enter_code else R.string.cloud_enter_code),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 Spacer(modifier = Modifier.height(40.dp))
+                Text(if (localReceiverName != null) stringResource(R.string.local_target, localReceiverName) else stringResource(R.string.cloud_target), style = MaterialTheme.typography.titleMedium)
+                if (localReceiverName != null) {
+                    Text(localReceiverAddress ?: stringResource(R.string.local_waiting_discovery), style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = onUseCloud) { Text(stringResource(R.string.local_switch_cloud)) }
+                }
 
                 OutlinedTextField(
                     value = pairCode,
                     onValueChange = { if (it.length <= 8) onPairCodeChange(it.uppercase()) },
-                    label = { Text("Pair Code") },
+                    label = { Text(stringResource(R.string.connection_pair_code)) },
                     placeholder = { Text("e.g. SRJS") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions.Default,
+                    enabled = !isJoining,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii,
+                        capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false, imeAction = ImeAction.Done),
                     textStyle = MaterialTheme.typography.headlineMedium.copy(
                         textAlign = TextAlign.Center
                     )
@@ -128,7 +156,7 @@ fun HomeScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp),
-                    enabled = pairCode.isNotBlank(),
+                    enabled = pairCode.isNotBlank() && !isJoining,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
                     )
@@ -139,9 +167,16 @@ fun HomeScreen(
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.size(8.dp))
-                    Text("Join Room", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(if (isJoining) R.string.connection_connecting else R.string.connection_join), style = MaterialTheme.typography.titleMedium)
                 }
+                if (isJoining) TextButton(onClick = onCancelJoin) { Text(stringResource(R.string.connection_cancel)) }
 
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedButton(onClick = onDiscoverDevices, enabled = !isJoining, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Devices, contentDescription = null)
+                    Spacer(Modifier.size(8.dp))
+                    Text(stringResource(R.string.discovery_title))
+                }
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Text(
@@ -154,6 +189,8 @@ fun HomeScreen(
                         MaterialTheme.colorScheme.secondary,
                     textAlign = TextAlign.Center
                 )
+                Spacer(modifier = Modifier.height(16.dp))
+                RemoteControlCard(remoteControlState, onRemoteEnabled, onRemoteSettings, onRemoteHelp, onRemoteRetry)
             }
 
             Text(

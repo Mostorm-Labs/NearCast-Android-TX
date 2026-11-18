@@ -1,0 +1,15 @@
+{
+  "action": "nearcast-input-target",
+  "data": {
+    "version": 1,
+    "contractFingerprint": "0082a3428b1e8038e74c2883ab4372cf2169c7b3c1c9407d41eeb70f87b324e8",
+    "runtimeInstanceId": "rx-integration-fixture",
+    "target": {
+      "sessionId": "rx-integration-session",
+      "sessionGeneration": "1",
+      "slotId": "0",
+      "bindingGeneration": "13",
+      "lifecycleGeneration": "2"
+    }
+  }
+}

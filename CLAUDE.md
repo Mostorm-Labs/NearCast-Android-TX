@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ScreenCastDemo is an Android WebRTC screen casting client that implements the NearHub WebCast protocol. It captures the device screen and streams it to a NearHub receiver via P2P WebRTC connection.
+NearHub Cast is an Android WebRTC screen casting client that implements the NearHub WebCast protocol. It captures the device screen and streams it to a NearHub receiver via P2P WebRTC connection. The repository remains `NearCast-Android-TX`; retain `com.auditoryworks.nearcast`, its signing identity, and the `nearcast-tx-android` update product when changing visible branding. See `docs/app-name-and-updates.md`.
 
 ## Build Commands
 
@@ -32,14 +32,14 @@ This patching runs automatically as part of `preBuild` — no manual step needed
 
 ## Architecture
 
-### Two Signaling Modes
+### Signaling and Receiver Discovery
 
-The app operates in one of two modes selected on the HomeScreen:
+The production HomeScreen supports two explicit pairing routes:
 
 1. **NearHub Cloud Mode**: Connects to `wss://cast.nearhub.us/?role=sender` for cloud-mediated signaling
-2. **Local Direct Mode**: Discovers `_webrtc-signal._tcp.` services via NSD on the LAN, then connects directly to `ws://<host>:<port>`
+2. **Local WebCast**: Browse `_nearcast._tcp.` through Android NSD, physically confirm the receiver SPKI pin, request its local code, then choose the local receiver and enter that code. `LocalReceiverConnection` opens pinned WSS to native A/AAAA/SRV routes and reuses the NearHub room/SDP/ICE envelope. It never falls back to cloud. TXT never supplies a destination URL.
 
-Both modes use the same `WebRtcManager` but different `SignalingClient` implementations (`NearHubSignalingClient` vs `LocalDirectSignalingClient`). The `SignalingClient` interface abstracts both.
+`LocalDirectSignalingClient` remains debug-only and uses a different flat protocol. Production local WebCast uses `NearHubSignalingClient` with an isolated, pinned `LocalReceiverConnection`. See `docs/device-discovery.md`.
 
 ### Two-Phase WebRTC Connection
 
@@ -88,8 +88,8 @@ Starting a cast requires three permissions requested in sequence:
 | `ScreenCastApp.kt` | Application class |
 | `ScreenCaptureService.kt` | Foreground service required for MediaProjection (Android 10+) |
 | `webrtc/SignalingClient.kt` | Interface abstracting NearHub/local signaling |
-| `webrtc/NearHubSignalingClient.kt` | Cloud signaling via NearHub WebSocket; also defines the `NearHubEvent` sealed class |
-| `webrtc/LocalDirectSignalingClient.kt` | LAN direct signaling via discovered NSD service |
+| `webrtc/NearHubSignalingClient.kt` | Shared cloud/local WebCast room signaling; defines `NearHubEvent` and fences retired socket callbacks |
+| `webrtc/LocalDirectSignalingClient.kt` | Debug/local fixture signaling, independent of production discovery |
 | `webrtc/WebRtcManager.kt` | WebRTC connection lifecycle, two-phase setup, DataChannel management, audio injection |
 | `webrtc/SystemAudioCapture.kt` | Captures Android playback audio via `AudioPlaybackCaptureConfiguration`, feeds PCM into WebRTC |
 | `HomeScreen.kt` | Pairing code input UI + device discovery button |
@@ -98,7 +98,7 @@ Starting a cast requires three permissions requested in sequence:
 | `ui/screens/DeviceDiscoveryBottomSheet.kt` | Modal bottom sheet listing nearby devices |
 | `app/src/main/java/org/webrtc/audio/` | Patched WebRTC audio classes that expose `AudioRecordDataCallback` |
 
-### Signaling Protocol (NearHub Cloud)
+### Signaling Protocol (NearHub Cloud / Local WebCast)
 
 The app connects to `wss://cast.nearhub.us/?role=sender` and exchanges JSON messages over WebSocket:
 - `join` / `joined` / `join_failed` for room joining
@@ -117,15 +117,17 @@ The app connects to `wss://cast.nearhub.us/?role=sender` and exchanges JSON mess
 
 ## Service Discovery (mDNS/NSD)
 
-The app supports AirPlay-like local network device discovery via Android's built-in `NsdManager`. When user taps "Scan for Devices" on HomeScreen:
+When the user opens "Find receivers" on HomeScreen:
 
-1. NSD scans for `_webrtc-signal._tcp.` services
-2. Resolves each service to get host IP and port
-3. Displays devices in a bottom sheet with name and IP
-4. User taps a device → prompts for pair code → auto-fills serverUrl and pairCode
-5. Proceeds with normal join flow using `LocalDirectSignalingClient`
+1. NSD browses only `_nearcast._tcp.` and resolves native A/AAAA addresses and SRV port.
+2. A foreground bottom sheet shows compatible receivers; stop/background/loss fences stale callbacks.
+3. First selection observes TLS SPKI without HTTP, then requests `/nearcast/trust-display` pinned to that observed key.
+4. The user compares the full fingerprint on the receiver and explicitly saves trust. `/nearcast/code-display` requires that saved key; rotation is blocked until a new physical comparison.
+5. Display responses contain status only; pairing codes are entered manually. When advertised, `signaling-select-v1` / `code-display-v2` explicitly requests the local backend and verifies receiver/runtime/backend in the response. Older receivers require the user to confirm the code is local.
+6. A selected local target keeps foreground discovery active until joining. WSS uses a fresh TLS context, exact SPKI pin, native network socket factory, and no proxy/redirect/cookies. Removing trust invalidates active local sockets. Cloud TLS stays independent.
+7. `SenderAnnouncements` sends peer-scoped `nearcast-source` (android/mobile/nearhub-cast) and `nearcast-share-state`. Only visible, calibrated full-screen capture claims `monitor`; `SenderConsent` responds to RX requests using current local permission and binding state. Identity metadata never grants permission by itself.
 
-**Permission required**: `ACCESS_WIFI_STATE`
+**Permissions**: Existing `INTERNET`/`ACCESS_WIFI_STATE` plus normal `CHANGE_WIFI_MULTICAST_STATE`; multicast reception is held only during foreground discovery. Current target SDK remains 35. Review Android local network runtime permission requirements when raising target SDK to 37+.
 
 ## Local Signaling Server (Testing)
 

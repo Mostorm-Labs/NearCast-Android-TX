@@ -3,185 +3,133 @@ package com.auditoryworks.nearcast.discovery
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.net.SocketFactory
+import kotlin.coroutines.resume
 
-private const val TAG = "NsdDiscoveryManager"
+enum class DiscoveryIssue { START_FAILED, RESOLVE_FAILED, PERMISSION, STOPPED }
+data class DiscoverySnapshot(val devices: List<ReceiverDevice> = emptyList(), val scanning: Boolean = false, val issue: DiscoveryIssue? = null)
 
-class NsdDiscoveryManager(private val context: Context) {
+/** Foreground-only system DNS-SD; no TXT address or fixed UI TTL becomes a native route. */
+class NsdDiscoveryManager(context: Context) {
+    private val app = context.applicationContext
+    private val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val handler = Handler(Looper.getMainLooper())
+    private val epoch = AtomicLong()
+    private val native = mutableMapOf<String, Pair<ReceiverDevice, SocketFactory>>()
+    @Synchronized fun current(instance: String): ReceiverDevice? = native[instance]?.first
+    @Synchronized fun socketFactory(device: ReceiverDevice): SocketFactory = native[device.instance]
+        ?.takeIf { it.first.routeKey == device.routeKey }?.second ?: throw IllegalStateException("Receiver offline")
 
-    private val nsdManager: NsdManager by lazy {
-        context.getSystemService(Context.NSD_SERVICE) as NsdManager
-    }
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val resolvedServices = mutableMapOf<String, NsdServiceInfo>()
-
-    fun discoverServices(vararg serviceTypes: String): Flow<List<DiscoveredService>> = callbackFlow {
-        // Reset cached resolved services for each new scan session.
-        // Otherwise, same-name services discovered in previous sessions are skipped.
-        resolvedServices.clear()
-        val devices = mutableListOf<DiscoveredService>()
-        val pendingResolves = mutableSetOf<String>()
-        var currentServiceIndex = 0
-
-        val discoveryListener = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(serviceType: String) {
-                Log.d(TAG, "Discovery started for $serviceType")
+    @Suppress("DEPRECATION")
+    fun discoverServices(): Flow<DiscoverySnapshot> = callbackFlow {
+        val generation = epoch.incrementAndGet()
+        synchronized(this@NsdDiscoveryManager) { native.clear() }
+        val live = AtomicBoolean(true)
+        var issue: DiscoveryIssue? = null
+        var scanning = true
+        val directory = ReceiverDirectory()
+        val known = mutableMapOf<String, NsdServiceInfo>()
+        val subscriptions = mutableMapOf<String, NsdManager.ServiceInfoCallback>()
+        val requests = Channel<Pair<NsdServiceInfo, Long>>(64)
+        val queued = mutableSetOf<String>()
+        val lock = (app.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.createMulticastLock("nearcast-discovery")?.apply { setReferenceCounted(false) }
+        fun active() = live.get() && epoch.get() == generation
+        fun emit() { if (active()) trySend(DiscoverySnapshot(directory.list(), scanning, issue)) }
+        fun dispatch(block: () -> Unit) { handler.post { if (active()) block() } }
+        fun remove(instance: String, token: Long? = null) {
+            if (token == null) directory.lost(instance) else if (!directory.unresolved(instance, token)) return
+            synchronized(this@NsdDiscoveryManager) { if (epoch.get() == generation) native.remove(instance) }
+            emit()
+        }
+        fun resolved(info: NsdServiceInfo, token: Long) {
+            if (!active()) return
+            val addresses = if (Build.VERSION.SDK_INT >= 34) info.hostAddresses else listOfNotNull(info.host)
+            val receiver = ReceiverDiscovery.normalize(ReceiverAdvertisement(info.serviceName, info.serviceType,
+                addresses.mapNotNull { it.hostAddress }, info.port,
+                info.attributes.mapValues { (_, value) -> value?.toString(Charsets.UTF_8).orEmpty() }))
+            if (receiver == null) { remove(info.serviceName, token); return }
+            if (directory.resolved(info.serviceName, token, receiver)) {
+                val factory = if (Build.VERSION.SDK_INT >= 33) info.network?.socketFactory ?: SocketFactory.getDefault() else SocketFactory.getDefault()
+                synchronized(this@NsdDiscoveryManager) { if (epoch.get() == generation) native[receiver.instance] = receiver to factory }
+                emit()
             }
-
-            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                Log.d(TAG, "Service found: ${serviceInfo.serviceName} (type: ${serviceInfo.serviceType})")
-                val key = "${serviceInfo.serviceType}:${serviceInfo.serviceName}"
-                if (!resolvedServices.containsKey(key) && !pendingResolves.contains(key)) {
-                    pendingResolves.add(key)
-                    resolveService(serviceInfo) { resolved ->
-                        pendingResolves.remove(key)
-                        if (resolved != null) {
-                            resolvedServices[key] = resolved
-                            val device = nsdServiceInfoToDiscoveredService(resolved)
-                            val existing = devices.indexOfFirst {
-                                it.name == device.name && it.serviceType == device.serviceType
-                            }
-                            if (existing >= 0) {
-                                devices[existing] = device
-                            } else {
-                                devices.add(device)
-                            }
-                            Log.d(TAG, "Emitting ${devices.size} devices: ${devices.map { "${it.name}(${it.serviceType})" }}")
-                            trySend(devices.toList())
+        }
+        fun enqueue(info: NsdServiceInfo, token: Long) {
+            if (queued.add(info.serviceName) && !requests.trySend(info to token).isSuccess) queued.remove(info.serviceName)
+        }
+        val worker = launch(Dispatchers.Main.immediate) {
+            for ((info, token) in requests) {
+                try {
+                    val result = withTimeoutOrNull(6000) {
+                        suspendCancellableCoroutine<NsdServiceInfo?> { continuation ->
+                            try { nsd.resolveService(info, object : NsdManager.ResolveListener {
+                                override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) { dispatch { if (continuation.isActive) continuation.resume(null) } }
+                                override fun onServiceResolved(serviceInfo: NsdServiceInfo) { dispatch { if (continuation.isActive) continuation.resume(serviceInfo) } }
+                            }) } catch (_: RuntimeException) { if (continuation.isActive) continuation.resume(null) }
                         }
                     }
-                }
-            }
-
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                Log.d(TAG, "Service lost: ${serviceInfo.serviceName}")
-                val key = "${serviceInfo.serviceType}:${serviceInfo.serviceName}"
-                resolvedServices.remove(key)
-                devices.removeAll { "${it.serviceType}:${it.name}" == key }
-                trySend(devices.toList())
-            }
-
-            override fun onDiscoveryStopped(serviceType: String) {
-                Log.d(TAG, "Discovery stopped for $serviceType")
-            }
-
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                Log.e(TAG, "Discovery start failed for $serviceType: errorCode=$errorCode")
-            }
-
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-                Log.e(TAG, "Discovery stop failed for $serviceType: errorCode=$errorCode")
+                    if (result != null) resolved(result, token)
+                } finally { queued.remove(info.serviceName) }
             }
         }
-
-        // Start discovery for first service type only (Android NsdManager only allows one active browse)
-        mainHandler.post {
-            try {
-                val serviceType = serviceTypes[currentServiceIndex]
-                Log.d(TAG, "Starting discovery for $serviceType")
-                nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start discovery", e)
-            }
-        }
-
-        // Periodically switch between service types if no devices found
-        var isDiscoveryActive = true
-        val switchRunnable = object : Runnable {
-            override fun run() {
-                if (devices.isEmpty() && isDiscoveryActive) {
-                    // Stop current discovery first (this is async but necessary)
-                    try {
-                        nsdManager.stopServiceDiscovery(discoveryListener)
-                    } catch (_: Exception) {}
-
-                    // Wait a bit then start next discovery
-                    mainHandler.postDelayed({
-                        if (isDiscoveryActive) {
-                            currentServiceIndex = (currentServiceIndex + 1) % serviceTypes.size
-                            val nextServiceType = serviceTypes[currentServiceIndex]
-                            Log.d(TAG, "Switching to $nextServiceType")
-                            try {
-                                nsdManager.discoverServices(nextServiceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to start discovery for $nextServiceType", e)
-                            }
-                            // Schedule next switch
-                            mainHandler.postDelayed(this, 5000) // Switch every 5 seconds
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) = dispatch { scanning = true; issue = null; emit() }
+            override fun onServiceFound(info: NsdServiceInfo) = dispatch {
+                val token = directory.found(info.serviceName) ?: return@dispatch
+                known[info.serviceName] = info
+                if (Build.VERSION.SDK_INT >= 34 && subscriptions.size < 32) {
+                    if (info.serviceName in subscriptions) return@dispatch
+                    val callback = object : NsdManager.ServiceInfoCallback {
+                        override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) = dispatch registrationFailed@{
+                            if (!directory.matches(info.serviceName, token)) return@registrationFailed
+                            subscriptions.remove(info.serviceName); issue = DiscoveryIssue.RESOLVE_FAILED; enqueue(info, token); emit()
                         }
-                    }, 1000) // Wait 1 second for stop to complete
-                }
+                        override fun onServiceUpdated(serviceInfo: NsdServiceInfo) = dispatch { resolved(serviceInfo, token) }
+                        override fun onServiceLost() = dispatch { remove(info.serviceName, token) }
+                        override fun onServiceInfoCallbackUnregistered() = Unit
+                    }
+                    subscriptions[info.serviceName] = callback
+                    try { nsd.registerServiceInfoCallback(info, { command -> handler.post(command) }, callback) }
+                    catch (_: RuntimeException) { subscriptions.remove(info.serviceName); enqueue(info, token) }
+                } else if (info.serviceName !in subscriptions) enqueue(info, token)
             }
+            override fun onServiceLost(info: NsdServiceInfo) = dispatch {
+                known.remove(info.serviceName)
+                if (Build.VERSION.SDK_INT >= 34) subscriptions.remove(info.serviceName)?.let { runCatching { nsd.unregisterServiceInfoCallback(it) } }
+                remove(info.serviceName)
+            }
+            override fun onDiscoveryStopped(serviceType: String) = dispatch { scanning = false; issue = DiscoveryIssue.STOPPED; directory.clear(); synchronized(this@NsdDiscoveryManager) { native.clear() }; emit() }
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) = dispatch { scanning = false; issue = DiscoveryIssue.START_FAILED; emit() }
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
         }
-        mainHandler.postDelayed(switchRunnable, 5000)
-
+        val refresh = launch(Dispatchers.Main.immediate) {
+            while (isActive) { delay(30000); known.values.filter { it.serviceName !in subscriptions }.forEach { info -> directory.found(info.serviceName)?.let { enqueue(info, it) } } }
+        }
+        dispatch {
+            try { lock?.acquire(); nsd.discoverServices(ReceiverDiscovery.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener) }
+            catch (_: SecurityException) { scanning = false; issue = DiscoveryIssue.PERMISSION; emit() }
+            catch (_: RuntimeException) { scanning = false; issue = DiscoveryIssue.START_FAILED; emit() }
+        }
+        emit()
         awaitClose {
-            Log.d(TAG, "Stopping discovery...")
-            isDiscoveryActive = false
-            mainHandler.removeCallbacks(switchRunnable)
-            mainHandler.post {
-                try {
-                    nsdManager.stopServiceDiscovery(discoveryListener)
-                } catch (_: Exception) {
-                    Log.w(TAG, "Error stopping discovery", null)
-                }
+            live.set(false); refresh.cancel(); worker.cancel(); requests.close()
+            synchronized(this@NsdDiscoveryManager) { if (epoch.get() == generation) native.clear() }
+            handler.post {
+                runCatching { nsd.stopServiceDiscovery(listener) }
+                if (Build.VERSION.SDK_INT >= 34) subscriptions.values.forEach { runCatching { nsd.unregisterServiceInfoCallback(it) } }
+                subscriptions.clear(); if (lock?.isHeld == true) runCatching { lock.release() }
             }
-        }
-    }
-
-    private fun resolveService(serviceInfo: NsdServiceInfo, onResolved: (NsdServiceInfo?) -> Unit) {
-        val resolveListener = object : NsdManager.ResolveListener {
-            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.w(TAG, "Resolve failed for ${serviceInfo.serviceName}: $errorCode")
-                onResolved(null)
-            }
-
-            override fun onServiceResolved(resolvedInfo: NsdServiceInfo) {
-                Log.d(TAG, "Service resolved: ${resolvedInfo.serviceName} -> ${resolvedInfo.host}:${resolvedInfo.port}")
-                onResolved(resolvedInfo)
-            }
-        }
-
-        try {
-            nsdManager.resolveService(serviceInfo, resolveListener)
-        } catch (e: Exception) {
-            Log.e(TAG, "Resolve exception", e)
-            onResolved(null)
-        }
-    }
-
-    private fun nsdServiceInfoToDiscoveredService(info: NsdServiceInfo): DiscoveredService {
-        val txtRecord = parseTxtRecord(info)
-        return DiscoveredService(
-            name = info.serviceName,
-            host = info.host?.hostAddress ?: "",
-            port = info.port,
-            serviceType = info.serviceType,
-            txtRecord = txtRecord
-        )
-    }
-
-    private fun parseTxtRecord(info: NsdServiceInfo): Map<String, String> {
-        return try {
-            val rawTxtRecord = info.attributes
-            if (rawTxtRecord == null) {
-                emptyMap()
-            } else {
-                rawTxtRecord.mapNotNull { (key, value) ->
-                    val keyStr = key
-                    val valueStr = if (value != null) String(value, Charsets.UTF_8) else ""
-                    keyStr to valueStr
-                }.toMap()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse TXT record", e)
-            emptyMap()
         }
     }
 }

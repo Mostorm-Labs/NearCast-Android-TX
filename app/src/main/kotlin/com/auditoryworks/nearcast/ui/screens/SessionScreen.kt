@@ -35,6 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import com.auditoryworks.nearcast.touchback.RemoteControlState
 import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.session.CaptureState
 import com.auditoryworks.nearcast.session.CastSessionState
@@ -52,7 +55,12 @@ fun SessionScreen(
     onStopCast: () -> Unit,
     onLeave: () -> Unit,
     onUploadLogs: () -> Unit,
-    onShowDownloadProgress: () -> Unit
+    onShowDownloadProgress: () -> Unit,
+    remoteControlState: RemoteControlState,
+    onRemoteEnabled: (Boolean) -> Unit,
+    onRemoteSettings: () -> Unit,
+    onRemoteHelp: () -> Unit,
+    onRemoteRetry: () -> Unit
 ) {
     val isLiveMediaPath = sessionState.transport == TransportState.CONNECTED &&
         sessionState.capture == CaptureState.ACTIVE
@@ -93,6 +101,7 @@ fun SessionScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
@@ -174,7 +183,9 @@ fun SessionScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                RemoteControlCard(remoteControlState, onRemoteEnabled, onRemoteSettings, onRemoteHelp, onRemoteRetry)
+                Spacer(modifier = Modifier.height(24.dp))
 
                 when {
                     sessionState.capture == CaptureState.ACTIVE ||

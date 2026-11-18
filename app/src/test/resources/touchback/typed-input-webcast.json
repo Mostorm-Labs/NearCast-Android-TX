@@ -1,0 +1,82 @@
+{
+  "contractFingerprint": "0082a3428b1e8038e74c2883ab4372cf2169c7b3c1c9407d41eeb70f87b324e8",
+  "targetMessage": {
+    "action": "nearcast-input-target",
+    "data": {
+      "version": 1,
+      "contractFingerprint": "0082a3428b1e8038e74c2883ab4372cf2169c7b3c1c9407d41eeb70f87b324e8",
+      "runtimeInstanceId": "rx-runtime-1",
+      "target": {
+        "sessionId": "share-1",
+        "sessionGeneration": "1",
+        "slotId": "0",
+        "bindingGeneration": "1",
+        "lifecycleGeneration": "1"
+      }
+    }
+  },
+  "sourceMessage": {
+    "action": "nearcast-input-source",
+    "data": {
+      "version": 1,
+      "contractFingerprint": "0082a3428b1e8038e74c2883ab4372cf2169c7b3c1c9407d41eeb70f87b324e8",
+      "sourceBindingId": "share-binding-1",
+      "roomId": "room-1",
+      "senderUserId": "sender-1",
+      "receiverUserId": "receiver-1",
+      "geometryRevision": "geometry-1",
+      "available": true,
+      "disabledReason": null,
+      "inputCapability": {
+        "capability": "input.stream",
+        "direction": "receiver_to_source",
+        "reliability": "ordered_reliable",
+        "profiles": [
+          "AXTP-TYPED-INPUT-V1"
+        ],
+        "formats": [
+          "input-sample-v1"
+        ],
+        "inputTypes": [
+          "touch"
+        ],
+        "maxDataBytes": 4096,
+        "touch": {
+          "maxContacts": 10
+        }
+      }
+    }
+  },
+  "unavailableSourceMessage": {
+    "action": "nearcast-input-source",
+    "data": {
+      "version": 1,
+      "contractFingerprint": "0082a3428b1e8038e74c2883ab4372cf2169c7b3c1c9407d41eeb70f87b324e8",
+      "sourceBindingId": null,
+      "roomId": "room-1",
+      "senderUserId": "sender-1",
+      "receiverUserId": "receiver-1",
+      "geometryRevision": null,
+      "available": false,
+      "disabledReason": "NATIVE_GEOMETRY_UNAVAILABLE",
+      "inputCapability": {
+        "capability": "input.stream",
+        "direction": "receiver_to_source",
+        "reliability": "ordered_reliable",
+        "profiles": [
+          "AXTP-TYPED-INPUT-V1"
+        ],
+        "formats": [
+          "input-sample-v1"
+        ],
+        "inputTypes": [
+          "touch"
+        ],
+        "maxDataBytes": 4096,
+        "touch": {
+          "maxContacts": 10
+        }
+      }
+    }
+  }
+}

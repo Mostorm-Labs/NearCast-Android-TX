@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <application android:label="NearHub Cast Debug" tools:replace="android:label">
+        <activity android:name="com.auditoryworks.nearcast.discovery.DiscoveryFixtureActivity" android:exported="true"
+            android:label="NearHub Cast discovery fixture" android:taskAffinity="${applicationId}.discoveryfixture" />
+        <receiver android:name="com.auditoryworks.nearcast.discovery.DiscoveryFixtureControl" android:exported="true" />
+        <activity android:name="com.auditoryworks.nearcast.touchback.InputProbeActivity"
+            android:exported="true" android:label="NearHub Cast input test" />
+        <activity android:name="com.auditoryworks.nearcast.touchback.CaptureProbeActivity"
+            android:exported="true" android:label="NearHub Cast capture test"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
+    </application>
+</manifest>

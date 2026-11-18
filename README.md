@@ -1,4 +1,6 @@
-# NearCast-Android-TX — NearHub WebCast Android Client
+# NearHub Cast — Android 发送端
+
+应用显示名为 **NearHub Cast**，调试版为 **NearHub Cast Debug**。仓库、包名、签名、Mosapi 产品标识及发布资产前缀沿用原标识，保持升级兼容，详见[应用名称与更新兼容](docs/app-name-and-updates.md)。
 
 基于 WebRTC 的 Android 屏幕投射客户端，对接 NearHub WebCast 协议。
 
@@ -78,6 +80,14 @@ NearCast-Android-TX/
 6. P2P 连接建立后，点击 **Start Screen Cast**
 7. 授权录屏权限，开始投屏
 
+首页可点击“发现接收端”，选择同网 NearCast 设备，现场核对完整指纹，再点击“使用此设备的本地配对码”。输入接收端的本地码后，使用已确认公钥的本地 WSS 配对与 WebRTC 投屏；云端码可通过“改用云端配对码”独立连接。详见[设备发现、本地投屏与信任](docs/device-discovery.md)。
+
+控制通道建立时声明真实 Android 移动客户端身份；整屏校准成功后更新共享来源，并响应 RX 的反控请求。无需伪装成 Windows，详见[安卓反控](docs/remote-control.md)。
+
+Android 可接收 RX 手势模式的鼠标输入，左键和滚轮继续执行，鼠标右键消息会被过滤；Native 原生触控保留。
+
+视频保持原生采集尺寸，发送端采用最高 12 Mbps、30 fps 和分辨率优先策略；实际码率仍由网络拥塞控制调整，详见[视频画质与诊断](docs/video-quality.md)。
+
 ### 本地测试（不接 NearHub）
 
 如果暂时没有 NearHub 设备，可以用本地信令测试：
@@ -114,6 +124,7 @@ python server.py
 DataChannel 用于：
 - 投屏开始后的重新协商信令（优先于 WebSocket）
 - 控制消息（leave 等）
+- AXTP 接收端反控；仅在用户开启无障碍服务且整屏校准通过后执行输入，详见[反控模块、授权与验收](docs/remote-control.md)。
 
 ### ScreenCaptureService.kt
 

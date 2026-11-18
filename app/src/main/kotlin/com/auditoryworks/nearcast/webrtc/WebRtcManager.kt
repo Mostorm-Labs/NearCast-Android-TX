@@ -24,6 +24,8 @@ import com.auditoryworks.nearcast.session.CastSessionState
 import com.auditoryworks.nearcast.session.ProjectionStopReason
 import com.auditoryworks.nearcast.session.StatusFrameMessage
 import com.auditoryworks.nearcast.session.TransportState
+import com.auditoryworks.nearcast.touchback.TouchbackController
+import com.auditoryworks.nearcast.touchback.MediaIdentity
 import com.auditoryworks.nearcast.session.reduce
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -68,7 +70,7 @@ import java.nio.ByteBuffer
 private const val TAG = "WebRtcManager"
 private const val AUDIO_SAMPLE_RATE_HZ = 48_000
 private const val AUDIO_CHANNEL_COUNT = 1
-private const val VIDEO_CAPTURE_FPS = 30
+private const val VIDEO_CAPTURE_FPS = ScreenVideoQuality.MAX_FRAMERATE
 private const val VIRTUAL_DISPLAY_DPI = 400
 
 /**
@@ -91,6 +93,10 @@ class WebRtcManager(
     private val audioDeviceModule: JavaAudioDeviceModule
     private val peerConnectionFactory: PeerConnectionFactory
 
+    val permissionSessionKey: String = java.util.UUID.randomUUID().toString()
+    private val touchback = TouchbackController(context.applicationContext)
+    val remoteControlState get() = touchback.state
+    fun retryRemoteControl() = touchback.retry()
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
     var isDataChannelOpen = false
@@ -155,6 +161,7 @@ class WebRtcManager(
         override fun onFrameCaptured(frame: VideoFrame) {
             if (forwardRealCaptureFrames) {
                 downstreamCapturerObserver?.onFrameCaptured(frame)
+                touchback.onFrame(frame, activeCaptureGeneration)
             }
         }
     }
@@ -253,6 +260,7 @@ class WebRtcManager(
         val next = previous.reduce(event)
         if (next == previous) return
         _sessionState.value = next
+        touchback.updateCapture(next, activeCaptureGeneration)
         SessionTraceRecorder.record(
             TAG,
             "session state transport=${previous.transport}->${next.transport} " +
@@ -305,6 +313,7 @@ class WebRtcManager(
             signalingClient.events.collect { event ->
                 when (event) {
                     is NearHubEvent.Joined -> {
+                        touchback.setIdentity(MediaIdentity(event.roomId, event.userId, event.hostUserId))
                         SessionTraceRecorder.record(TAG, "signaling joined roomId=${event.roomId} userId=${event.userId}")
                         dispatch(CastSessionEvent.TransportChanged(TransportState.CONNECTING))
                         onStatusChange("Joined room, establishing P2P...")
@@ -314,6 +323,7 @@ class WebRtcManager(
                     is NearHubEvent.AnswerReceived -> handleRemoteAnswer(event.sdp)
                     is NearHubEvent.IceCandidateReceived -> handleRemoteIceCandidate(event)
                     is NearHubEvent.Restored -> {
+                        touchback.setIdentity(MediaIdentity(event.roomId, event.userId, event.hostUserId))
                         SessionTraceRecorder.record(TAG, "session restored needsRenegotiation=${event.needsRenegotiation}")
                         if (event.needsRenegotiation) {
                             onStatusChange("Session restored, renegotiating...")
@@ -424,10 +434,13 @@ class WebRtcManager(
     private fun setupDataChannel() {
         val config = DataChannel.Init().apply { ordered = true }
         dataChannel = peerConnection?.createDataChannel("control", config)
-        dataChannel?.registerObserver(object : DataChannel.Observer {
+        val observedChannel = dataChannel ?: return
+        observedChannel.registerObserver(object : DataChannel.Observer {
             override fun onStateChange() {
-                val state = dataChannel?.state()
+                if (dataChannel !== observedChannel) return
+                val state = observedChannel.state()
                 isDataChannelOpen = state == DataChannel.State.OPEN
+                touchback.setChannel(if (isDataChannelOpen) observedChannel else null)
                 Log.d(TAG, "DataChannel state: $state")
                 SessionTraceRecorder.record(TAG, "DataChannel state=$state")
                 if (isDataChannelOpen) {
@@ -440,7 +453,7 @@ class WebRtcManager(
             override fun onBufferedAmountChange(amount: Long) {}
 
             override fun onMessage(buffer: DataChannel.Buffer) {
-                handleDataChannelMessage(buffer)
+                if (dataChannel === observedChannel) handleDataChannelMessage(buffer, observedChannel)
             }
         })
         Log.d(TAG, "DataChannel created")
@@ -607,6 +620,7 @@ class WebRtcManager(
                 captureHeight = height
                 lastCaptureWidth = width
                 lastCaptureHeight = height
+                touchback.captureGeometryChanged()
                 Log.i(TAG, "Screen capture resized to ${width}x${height}@${VIDEO_CAPTURE_FPS}fps ($reason)")
                 SessionTraceRecorder.record(
                     TAG,
@@ -707,6 +721,8 @@ class WebRtcManager(
 
                 override fun onCapturedContentResize(width: Int, height: Int) {
                     if (width <= 0 || height <= 0) return
+                    // A source can change without changing dimensions. Revoke its old proof.
+                    touchback.captureGeometryChanged()
                     receivedCapturedContentSize = true
                     updateScreenCaptureSize(width, height, "captured content changed")
                 }
@@ -799,6 +815,7 @@ class WebRtcManager(
                 }
             } ?: peerConnection?.addTrack(currentAudioTrack, streamId)
             check(videoSender != null && audioSender != null) { "PeerConnection is unavailable" }
+            applyScreenVideoQuality("capture-attached")
 
             forwardRealCaptureFrames = true
             statusVideoFrameProducer.stop()
@@ -1011,12 +1028,16 @@ class WebRtcManager(
     private fun handleRemoteOffer(sdp: String) {
         Log.d(TAG, "Handling remote offer")
         SessionTraceRecorder.record(TAG, "remote offer received sdpLen=${sdp.length}")
+        val currentPc = peerConnection ?: return
+        val currentVideoSender = videoSender
         val remoteDesc = SessionDescription(SessionDescription.Type.OFFER, sdp)
-        peerConnection?.setRemoteDescription(NoOpSdpObserver("setRemoteOffer"), remoteDesc)
+        currentPc.setRemoteDescription(NoOpSdpObserver("setRemoteOffer"), remoteDesc)
 
-        peerConnection?.createAnswer(object : SdpObserver {
+        currentPc.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                peerConnection?.setLocalDescription(NoOpSdpObserver("setLocalAnswer"), sdp)
+                currentPc.setLocalDescription(NoOpSdpObserver("setLocalAnswer") {
+                    applyScreenVideoQuality("local-answer", currentPc, currentVideoSender)
+                }, sdp)
                 SessionTraceRecorder.record(TAG, "local answer created sdpLen=${sdp.description.length}")
                 val sentViaDataChannel = if (isDataChannelOpen) {
                     trySendSignalViaDataChannel("answer", sdp.description)
@@ -1064,11 +1085,14 @@ class WebRtcManager(
             return
         }
         val remoteDesc = SessionDescription(SessionDescription.Type.ANSWER, sdp)
-        peerConnection?.setRemoteDescription(object : SdpObserver {
+        val currentPc = peerConnection ?: return
+        val currentVideoSender = videoSender
+        currentPc.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
                 Log.d(TAG, "=== ANSWER SET SUCCESS === isCasting=$isCasting")
                 SessionTraceRecorder.record(TAG, "remote answer set success isCasting=$isCasting")
                 lastRemoteAnswerSdp = sdp
+                applyScreenVideoQuality("remote-answer", currentPc, currentVideoSender)
                 // A remote SDP answer means negotiation succeeded, not that the media path is
                 // connected. ICE CONNECTED/COMPLETED remains the source of truth.
                 onStatusChange(currentCastingStatus())
@@ -1141,8 +1165,15 @@ class WebRtcManager(
         return dataChannel?.send(buffer) ?: false
     }
 
-    private fun handleDataChannelMessage(buffer: DataChannel.Buffer) {
-        if (buffer.binary) return
+    private fun handleDataChannelMessage(buffer: DataChannel.Buffer, from: DataChannel) {
+        if (buffer.binary) {
+            if (buffer.data.remaining() <= 65549) {
+                val copy = ByteArray(buffer.data.remaining())
+                buffer.data.duplicate().get(copy)
+                touchback.acceptBinary(copy, from)
+            }
+            return
+        }
         val bytes = ByteArray(buffer.data.remaining())
         buffer.data.get(bytes)
         val text = String(bytes, Charsets.UTF_8)
@@ -1151,6 +1182,7 @@ class WebRtcManager(
         try {
             val json = JSONObject(text)
             when (json.optString("action")) {
+                "nearcast-input-target" -> if (bytes.size <= 16384) touchback.acceptTarget(json, from)
                 "webrtc-signal" -> {
                     val data = json.getJSONObject("data")
                     val type = data.optString("type")
@@ -1182,6 +1214,7 @@ class WebRtcManager(
                     }
                 }
                 "leave" -> {
+                    touchback.setChannel(null)
                     val data = json.optJSONObject("data")
                     val reason = data?.optString("reason", "") ?: ""
                     Log.d(TAG, "DataChannel leave: $reason")
@@ -1294,6 +1327,30 @@ class WebRtcManager(
         }
     }
 
+    private fun applyScreenVideoQuality(trigger: String, expectedPc: PeerConnection? = peerConnection,
+        expectedSender: RtpSender? = videoSender) {
+        if (expectedPc == null || expectedSender == null) return
+        scope.launch {
+            if (isCleanupInProgress || peerConnection !== expectedPc || videoSender !== expectedSender) return@launch
+            try {
+                val parameters = expectedSender.parameters
+                if (!ScreenVideoQuality.configure(parameters)) {
+                    Log.d(TAG, "Video quality deferred: waiting for negotiated encodings ($trigger)")
+                    return@launch
+                }
+                val applied = expectedSender.setParameters(parameters)
+                val status = "video quality applied=$applied maxBps=${ScreenVideoQuality.MAX_BITRATE_BPS} " +
+                    "maxFps=$VIDEO_CAPTURE_FPS scale=1.0 preference=maintain-resolution trigger=$trigger"
+                if (applied) Log.i(TAG, status) else Log.w(TAG, status)
+                SessionTraceRecorder.record(TAG, status)
+            } catch (failure: RuntimeException) {
+                // A rejected tuning request must not terminate capture or the control channel.
+                Log.w(TAG, "Video quality configuration failed ($trigger): ${failure.javaClass.simpleName}")
+                SessionTraceRecorder.record(TAG, "video quality configuration failed trigger=$trigger type=${failure.javaClass.simpleName}")
+            }
+        }
+    }
+
     private fun startVideoStatsPolling() {
         if (videoStatsPollingJob?.isActive == true) return
 
@@ -1337,6 +1394,8 @@ class WebRtcManager(
             val stats = report.statsMap.values
             val videoSource = stats.firstOrNull { it.type == "media-source" && it.isVideoStats() }
             val outboundVideo = stats.firstOrNull { it.type == "outbound-rtp" && it.isVideoStats() }
+            val transport = outboundVideo?.stringMember("transportId")?.let { report.statsMap[it] }
+            val candidatePair = transport?.stringMember("selectedCandidatePairId")?.let { report.statsMap[it] }
 
             if (videoSource == null && outboundVideo == null) {
                 Log.d(TAG, "Video stats[$trigger#$snapshotId]: no video entries (${stats.size} stats)")
@@ -1361,12 +1420,16 @@ class WebRtcManager(
                 val bitrate = it.doubleMember("targetBitrate")?.toLong()
                 val encoder = it.stringMember("encoderImplementation")
                 val qlr = it.stringMember("qualityLimitationReason")
+                val qpSum = it.longMember("qpSum")
+                val codec = it.stringMember("codecId")?.let { id -> report.statsMap[id]?.stringMember("mimeType") }
                 "outbound=${frameWidth ?: "?"}x${frameHeight ?: "?"}@${fps ?: "?"}fps " +
                     "encoded=${framesEncoded ?: "?"} sent=${framesSent ?: "?"} bytes=${bytesSent ?: "?"} " +
-                    "bitrate=${bitrate ?: "?"} qlr=${qlr ?: "?"} encoder=${encoder ?: "?"}"
+                    "bitrate=${bitrate ?: "?"} qlr=${qlr ?: "?"} qpSum=${qpSum ?: "?"} codec=${codec ?: "?"} encoder=${encoder ?: "?"}"
             } ?: "outbound=none"
 
-            Log.d(TAG, "Video stats[$trigger#$snapshotId]: $sourceText | $outboundText")
+            val availableBps = candidatePair?.doubleMember("availableOutgoingBitrate")?.toLong()
+            val rttMs = candidatePair?.doubleMember("currentRoundTripTime")?.times(1000)?.toLong()
+            Log.d(TAG, "Video stats[$trigger#$snapshotId]: $sourceText | $outboundText | availableBps=${availableBps ?: "?"} rttMs=${rttMs ?: "?"}")
         } catch (e: Exception) {
             Log.w(TAG, "Video stats[$trigger#$snapshotId] parsing failed", e)
         }
@@ -1406,6 +1469,7 @@ class WebRtcManager(
         stopVideoStatsPolling()
         restoreLocalPlaybackAfterCasting()
         isDataChannelOpen = false
+        touchback.setChannel(null)
         lastRemoteAnswerSdp = null
         releasePhysicalCaptureResources(stopCapturer = true)
         disposeMediaPipeline()
@@ -1453,15 +1517,17 @@ class WebRtcManager(
         sendLeaveViaDataChannel()
         signalingClient.sendPeerLeave()
         cleanupP2P()
+        touchback.dispose()
         signalingClient.dispose()
         audioDeviceModule.release()
         scope.cancel()
     }
 
-    private class NoOpSdpObserver(private val label: String = "") : SdpObserver {
+    private class NoOpSdpObserver(private val label: String = "", private val onSuccess: () -> Unit = {}) : SdpObserver {
         override fun onCreateSuccess(sdp: SessionDescription) {}
         override fun onSetSuccess() {
             Log.d(TAG, "SDP $label success")
+            onSuccess()
         }
         override fun onCreateFailure(error: String) {
             Log.e(TAG, "SDP $label create failed: $error")
