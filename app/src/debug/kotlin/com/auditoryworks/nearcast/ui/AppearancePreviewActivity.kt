@@ -1,6 +1,10 @@
 package com.auditoryworks.nearcast.ui
 
 import android.os.Bundle
+import android.content.res.Configuration
+import android.content.res.Resources
+import android.os.LocaleList
+import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
@@ -13,8 +17,23 @@ import com.auditoryworks.nearcast.ui.theme.ScreenCastTheme
 
 /** Visual fixture only: never connects, saves trust, starts capture or acquires system input. */
 class AppearancePreviewActivity : ComponentActivity() {
+    private var catalogResources: Resources? = null
+    override fun getResources(): Resources = catalogResources ?: super.getResources()
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Catalog-only overrides let device QA inspect system resource variants without
+        // changing the user's language or night-mode preferences.
         super.onCreate(savedInstanceState)
+        val override = Configuration(resources.configuration)
+        intent.getStringExtra("locale")?.let { override.setLocales(LocaleList(Locale.forLanguageTag(it))) }
+        intent.getStringExtra("theme")?.let {
+            override.uiMode = (override.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                if (it == "dark") Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
+        }
+        if (intent.hasExtra("fontScale")) override.fontScale = intent.getFloatExtra("fontScale", 1f)
+        // Dialog windows also resolve resources through this Activity, so provide the
+        // catalog configuration there rather than only overriding Compose locals.
+        catalogResources = createConfigurationContext(override).resources
         val requested = intent.getStringExtra("state") ?: "active"
         val firstScreen = intent.getStringExtra("screen") ?: "session"
         val authorized = intent.getBooleanExtra("permission", true)
@@ -27,6 +46,7 @@ class AppearancePreviewActivity : ComponentActivity() {
                 var previous by remember { mutableStateOf(if (firstScreen == "session") "session" else "home") }
                 var code by remember { mutableStateOf("") }
                 var localName by remember { mutableStateOf<String?>(null) }
+                var connected by remember { mutableStateOf(firstScreen == "session") }
                 var tab by remember { mutableStateOf(if (firstScreen == "devices") ConnectionTab.DEVICES else ConnectionTab.CODE) }
                 var permissionDialog by remember { mutableStateOf<PermissionDialog?>(null) }
                 var startupGuide by remember { mutableStateOf(firstScreen == "startup") }
@@ -44,16 +64,21 @@ class AppearancePreviewActivity : ComponentActivity() {
                     calibration = if (capture == CaptureState.ACTIVE && authorized) CalibrationState.VERIFIED else CalibrationState.IDLE,
                     inputState = if (capture == CaptureState.ACTIVE && authorized) "active" else "closed")) }
                 val openSettings = { previous = screen; screen = "settings" }
+                val selectConnectionTab: (ConnectionTab) -> Unit = {
+                    tab = it
+                    screen = if (it == ConnectionTab.CODE && connected) "session" else "home"
+                }
                 when (screen) {
-                    "home", "devices", "startup" -> HomeScreen(code, "", tab, { tab = it }, DiscoverySnapshot(devices, true),
+                    "home", "devices", "startup" -> HomeScreen(code, "", tab, selectConnectionTab, DiscoverySnapshot(devices, true),
                         onSelectReceiver = { localName = it.name; tab = ConnectionTab.CODE }, onRefresh = {}, onNetworkSettings = {},
                         isUpdateDownloadInProgress = false, isDownloadProgressVisible = false,
-                        onPairCodeChange = { code = it }, onJoin = { screen = "session"; capture = CaptureState.IDLE },
+                        onPairCodeChange = { code = it }, onJoin = { connected = true; screen = "session"; capture = CaptureState.IDLE },
                         onOpenSettings = openSettings, onShowDownloadProgress = {}, localReceiverName = localName,
-                        onUseCloud = { localName = null; code = "" })
+                        onUseCloud = { localName = null; code = "" }, sessionActive = connected)
                     "settings" -> SettingsScreen(remote, { remote = remote.copy(enabled = it) },
                         { permissionDialog = PermissionDialog.REMOTE_EXPLANATION }, { permissionDialog = PermissionDialog.REMOTE_HELP }, {},
-                        false, {}, false, null, "", {}, false, false, {}, { screen = previous }, onPermissions = { startupGuide = true })
+                        false, {}, false, null, "", {}, false, false, {}, { screen = previous }, onPermissions = { startupGuide = true },
+                        onConnectionTabSelected = selectConnectionTab)
                     "trust", "device-options" -> {
                         HomeScreen("", "", ConnectionTab.DEVICES, {}, DiscoverySnapshot(devices, true), {}, {}, {}, false, false, {}, {}, {}, {})
                         val pin = "A1B2C3D4".repeat(8)
@@ -67,8 +92,9 @@ class AppearancePreviewActivity : ComponentActivity() {
                         isUpdateDownloadInProgress = false, isDownloadProgressVisible = false,
                         onStartCast = { capture = CaptureState.ACTIVE },
                         onStopCast = { capture = CaptureState.IDLE; remote = remote.copy(sourceReady = false, inputState = "closed") },
-                        onLeave = { screen = "home" }, onOpenSettings = openSettings, onShowDownloadProgress = {},
-                        remoteControlState = remote, onRemoteSettings = { permissionDialog = PermissionDialog.REMOTE_EXPLANATION }, onRemoteRetry = {})
+                        onLeave = { connected = false; screen = "home" }, onOpenSettings = openSettings, onShowDownloadProgress = {},
+                        remoteControlState = remote, onRemoteSettings = { permissionDialog = PermissionDialog.REMOTE_EXPLANATION }, onRemoteRetry = {},
+                        onScan = { selectConnectionTab(ConnectionTab.DEVICES) })
                 }
                 if (startupGuide && permissionDialog == null) StartupPermissionDialog(
                     StartupPermissionState(checked = true, showing = true), startupSnapshot, remote, false,

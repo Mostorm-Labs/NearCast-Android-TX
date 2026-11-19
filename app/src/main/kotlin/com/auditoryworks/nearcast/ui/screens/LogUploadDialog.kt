@@ -22,9 +22,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.auditoryworks.nearcast.R
-import com.auditoryworks.nearcast.ui.components.CastDarkDialogBars
+import com.auditoryworks.nearcast.ui.components.CastDialogBars
 
-private const val DEFAULT_LOG_DESCRIPTION = "NearHub Cast logs"
 private const val DEFAULT_LOG_EMAIL = "example@mail.com"
 
 @Composable
@@ -34,7 +33,8 @@ fun LogUploadDialog(
     onUpload: (email: String, description: String) -> Unit
 ) {
     var email by rememberSaveable { mutableStateOf(DEFAULT_LOG_EMAIL) }
-    var description by rememberSaveable { mutableStateOf(DEFAULT_LOG_DESCRIPTION) }
+    val defaultDescription = stringResource(R.string.logs_default_description)
+    var description by rememberSaveable { mutableStateOf(defaultDescription) }
 
     AlertDialog(
         onDismissRequest = {
@@ -44,7 +44,7 @@ fun LogUploadDialog(
         },
         title = { Text(stringResource(R.string.logs_title)) },
         text = {
-            CastDarkDialogBars()
+            CastDialogBars()
             Column {
                 OutlinedTextField(
                     value = email,

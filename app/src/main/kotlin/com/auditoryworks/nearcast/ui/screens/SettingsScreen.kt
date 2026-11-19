@@ -34,11 +34,14 @@ fun SettingsScreen(
     isDownloadProgressVisible: Boolean,
     onShowDownloadProgress: () -> Unit,
     onBack: () -> Unit,
-    onPermissions: () -> Unit = {}
+    onPermissions: () -> Unit = {},
+    onConnectionTabSelected: (ConnectionTab) -> Unit = { onBack() }
 ) {
     BackHandler(onBack = onBack)
     CastScaffold(isUpdateDownloadInProgress, isDownloadProgressVisible, {}, onShowDownloadProgress,
-        onBack = onBack, showVersion = true) {
+        showVersion = true, selectedTab = AppTab.SETTINGS,
+        onTabSelected = { if (it != AppTab.SETTINGS) onConnectionTabSelected(if (it == AppTab.SCAN) ConnectionTab.DEVICES else ConnectionTab.CODE) }) {
+        Text(stringResource(R.string.ui_settings), Modifier.fillMaxWidth(), style = MaterialTheme.typography.headlineMedium)
         RemoteControlCard(remoteControlState, onRemoteEnabled, onRemoteSettings, onRemoteHelp, onRemoteRetry)
         CastInsetPanel {
             Text(stringResource(R.string.ui_help_updates), style = MaterialTheme.typography.titleSmall)

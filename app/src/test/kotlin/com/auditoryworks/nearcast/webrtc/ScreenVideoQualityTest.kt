@@ -14,13 +14,13 @@ class ScreenVideoQualityTest {
             null, emptyList<RtpParameters.HeaderExtension>(), encodings.toList(), emptyList<RtpParameters.Codec>()) as RtpParameters
     }
 
-    @Test fun keepsNativeResolutionAndRaisesTheDefaultBudgetWithoutForcingAMinimum() {
+    @Test fun keepsNativeResolutionAndAppliesDefaultBudgetWithoutForcingAMinimum() {
         val encoding = RtpParameters.Encoding(null, true, 2.0).apply {
             maxBitrateBps = 2_500_000; minBitrateBps = 2_500_000; maxFramerate = 15
         }
         val parameters = parameters(encoding)
         assertTrue(ScreenVideoQuality.configure(parameters))
-        assertEquals(Integer.valueOf(12_000_000), encoding.maxBitrateBps)
+        assertEquals(Integer.valueOf(8_000_000), encoding.maxBitrateBps)
         assertNull("Congestion control must be able to reduce the rate", encoding.minBitrateBps)
         assertEquals(Integer.valueOf(30), encoding.maxFramerate)
         assertEquals(1.0, encoding.scaleResolutionDownBy!!, 0.0)

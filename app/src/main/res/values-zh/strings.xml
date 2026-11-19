@@ -21,10 +21,10 @@
     <string name="startup_defer">稍后设置</string>
     <string name="ui_settings">设置</string>
     <string name="ui_back">返回</string>
-    <string name="ui_code_tab">输入配对码</string>
-    <string name="ui_devices_tab">附近设备</string>
+    <string name="ui_code_tab">输码</string>
+    <string name="ui_devices_tab">扫描</string>
     <string name="ui_code_title">输入配对码</string>
-    <string name="ui_code_hint">输入 4 位云端配对码，或从“附近设备”选择本地接收端。</string>
+    <string name="ui_code_hint">输入 4 位云端配对码，或到“扫描”选择本地接收端。</string>
     <string name="ui_local_code_hint">输入此接收端屏幕上的 4 位本地配对码。</string>
     <string name="ui_clear_receiver">取消设备选择，改用云端配对码</string>
     <string name="ui_nearby_title">附近的接收端</string>
@@ -70,7 +70,6 @@
     <string name="logs_uploading">正在压缩并上传日志…</string>
     <string name="logs_upload">上传</string>
     <string name="logs_cancel">取消</string>
-
     <string name="screen_cast_channel_name">屏幕投送</string>
     <string name="screen_cast_channel_description">NearHub Cast 屏幕共享状态</string>
     <string name="notification_capture_starting">正在启动投屏…</string>
@@ -80,13 +79,11 @@
     <string name="notification_capture_stopped">投屏已停止，点按重新选择共享内容</string>
     <string name="notification_capture_permission_denied">未授予投屏权限，点按重试</string>
     <string name="notification_capture_error">投屏需要处理，点按重试</string>
-
     <string name="status_frame_content_hidden">共享应用当前不可见\n返回该应用后将自动恢复</string>
     <string name="status_frame_screen_locked">手机已锁屏，投屏已停止\n解锁后请在 NearHub Cast 中重新选择共享内容</string>
     <string name="status_frame_projection_stopped">共享应用已关闭或共享已停止\n请在 NearHub Cast 中重新选择共享内容</string>
     <string name="status_frame_permission_denied">尚未授予投屏权限\n请在 NearHub Cast 中重试</string>
     <string name="status_frame_capture_error">投屏内容暂时不可用\n请在 NearHub Cast 中重新选择共享内容</string>
-
     <string name="session_connection_title">接收端连接</string>
     <string name="session_connection_idle">尚未连接</string>
     <string name="session_connection_connecting">正在连接…</string>
@@ -214,4 +211,17 @@
     <string name="remote_rx_pending">接收端正在等待本机确认反控请求。</string>
     <string name="remote_rx_rejected">接收端未能开启输入流，请检查其反控模式或失败提示。</string>
     <string name="remote_rx_input_mode">接收端未能启动当前输入模式，请重新开启反控，或切换为 Native（原生输入）。</string>
+    <string name="ui_active_session_hint">已连接接收端。前往“输码”管理当前投屏。</string>
+    <string name="ui_current_cast">查看当前投屏</string>
+    <string name="update_title">发现新版本：%1$s</string>
+    <string name="update_body">是否下载并安装新版本？</string>
+    <string name="update_now">立即更新</string>
+    <string name="update_downloading">正在下载更新…</string>
+    <string name="update_background">下载会在后台继续。</string>
+    <string name="update_hide">隐藏</string>
+    <string name="update_failed">更新失败：%1$s</string>
+    <string name="logs_default_description">NearHub Cast 诊断日志</string>
+    <string name="logs_uploaded">日志已上传，编号：%1$s</string>
+    <string name="logs_failed">日志上传失败：%1$s</string>
+    <string name="capture_failed">屏幕共享失败：%1$s</string>
 </resources>

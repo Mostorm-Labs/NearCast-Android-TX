@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.dp
 import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.permissions.*
 import com.auditoryworks.nearcast.touchback.RemoteControlState
-import com.auditoryworks.nearcast.ui.components.CastDarkDialogBars
+import com.auditoryworks.nearcast.ui.components.CastDialogBars
 import com.auditoryworks.nearcast.ui.theme.CastColors
 
 @Composable
@@ -30,7 +30,7 @@ fun StartupPermissionDialog(state: StartupPermissionState, snapshot: StartupPerm
     AlertDialog(onDismissRequest = { if (!pending) onDefer() },
         title = { Text(stringResource(R.string.startup_permission_title)) },
         text = {
-            CastDarkDialogBars()
+            CastDialogBars()
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.startup_permission_body), style = MaterialTheme.typography.bodySmall,

@@ -36,7 +36,8 @@ fun SessionScreen(
     onShowDownloadProgress: () -> Unit,
     remoteControlState: RemoteControlState,
     onRemoteSettings: () -> Unit,
-    onRemoteRetry: () -> Unit
+    onRemoteRetry: () -> Unit,
+    onScan: () -> Unit = {}
 ) {
     val sharing = sessionState.capture == CaptureState.ACTIVE || sessionState.capture == CaptureState.PAUSED_HIDDEN
     val live = sessionState.isP2PReady && sessionState.capture == CaptureState.ACTIVE
@@ -50,13 +51,14 @@ fun SessionScreen(
         sessionState.isCaptureBusy -> captureStatusText(sessionState)
         else -> stringResource(R.string.ui_ready_to_share)
     }
-    CastScaffold(isUpdateDownloadInProgress, isDownloadProgressVisible, onOpenSettings, onShowDownloadProgress) {
+    CastScaffold(isUpdateDownloadInProgress, isDownloadProgressVisible, onOpenSettings, onShowDownloadProgress,
+        onTabSelected = { when (it) { AppTab.SCAN -> onScan(); AppTab.SETTINGS -> onOpenSettings(); else -> Unit } }) {
         CastPanel {
-            Box(Modifier.size(56.dp).background(Color(0x1775E5FF), RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(56.dp).background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
                 Icon(if (live) Icons.Default.CastConnected else Icons.Default.Cast, null, Modifier.size(28.dp), tint = CastColors.Accent)
             }
             Spacer(Modifier.height(20.dp))
-            Text(title, style = MaterialTheme.typography.headlineSmall, color = Color.White, textAlign = TextAlign.Center)
+            Text(title, style = MaterialTheme.typography.headlineSmall, color = CastColors.Text, textAlign = TextAlign.Center)
             Spacer(Modifier.height(8.dp))
             Text(when {
                 reselect || sessionState.capture == CaptureState.PAUSED_HIDDEN || sessionState.capture == CaptureState.ERROR -> captureStatusText(sessionState)
@@ -68,13 +70,13 @@ fun SessionScreen(
             if (sharing) {
                 Button(onClick = onStopCast, Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
                     shape = RoundedCornerShape(11.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA8394D), contentColor = Color.White)) {
+                    colors = ButtonDefaults.buttonColors(containerColor = CastColors.Primary, contentColor = MaterialTheme.colorScheme.onPrimary)) {
                     Icon(Icons.Default.Stop, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.session_action_stop))
                 }
             } else {
                 CastPrimaryButton(onStartCast, Modifier.fillMaxWidth(), enabled = sessionState.isP2PReady && !sessionState.isCaptureBusy) {
-                    if (sessionState.isCaptureBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                    if (sessionState.isCaptureBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                     else Icon(Icons.Default.PlayArrow, null, Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(if (reselect) R.string.session_action_reselect else R.string.session_action_start))

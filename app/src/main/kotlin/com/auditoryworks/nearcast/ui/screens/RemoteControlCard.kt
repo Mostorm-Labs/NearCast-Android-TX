@@ -20,7 +20,7 @@ import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.touchback.CalibrationState
 import com.auditoryworks.nearcast.touchback.RemoteControlState
 import com.auditoryworks.nearcast.ui.components.CastInsetPanel
-import com.auditoryworks.nearcast.ui.components.CastDarkDialogBars
+import com.auditoryworks.nearcast.ui.components.CastDialogBars
 import com.auditoryworks.nearcast.ui.components.CastStatusDot
 import com.auditoryworks.nearcast.ui.theme.CastColors
 
@@ -73,8 +73,8 @@ fun RemoteControlCard(state: RemoteControlState, onEnabled: (Boolean) -> Unit,
             Icon(Icons.Default.TouchApp, null, Modifier.size(20.dp), tint = CastColors.Accent)
             Text(stringResource(R.string.remote_title), Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
             Switch(checked = state.enabled, onCheckedChange = onEnabled, enabled = state.supported,
-                colors = SwitchDefaults.colors(checkedThumbColor = Color.White,
-                    checkedTrackColor = CastColors.Primary, uncheckedTrackColor = Color(0xFF3A4154)))
+                colors = SwitchDefaults.colors(checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                    checkedTrackColor = CastColors.Primary, uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant))
         }
         Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -157,7 +157,7 @@ fun CapturePermissionDialog(kind: PermissionDialog, onDismiss: () -> Unit, onOpe
     }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(stringResource(title)) },
         text = {
-            CastDarkDialogBars()
+            CastDialogBars()
             Text(stringResource(body), Modifier.verticalScroll(rememberScrollState()))
         },
         confirmButton = {

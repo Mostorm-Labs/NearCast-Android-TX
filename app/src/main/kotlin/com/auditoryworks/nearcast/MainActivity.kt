@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.auditoryworks.nearcast.ui.components.CastDialogBars
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -129,7 +131,7 @@ class MainActivity : ComponentActivity() {
     private var showLogUploadDialog by mutableStateOf(false)
     private var showSettings by mutableStateOf(false)
     private var manageReceiver by mutableStateOf(false)
-    private var connectionTab by mutableStateOf(ConnectionTab.CODE)
+    private var connectionTab by mutableStateOf(ConnectionTab.DEVICES)
     private var discoveryRevision by mutableStateOf(0)
     private var discoverySnapshot by mutableStateOf(DiscoverySnapshot())
     private var selectedLocalInstance by mutableStateOf<String?>(null)
@@ -156,7 +158,9 @@ class MainActivity : ComponentActivity() {
         selectedLocalInstance = savedInstanceState?.getString("local-instance")
         selectedLocalId = savedInstanceState?.getString("local-device-id")
         selectedLocalName = savedInstanceState?.getString("local-name").orEmpty()
-        connectionTab = ConnectionTab.entries.firstOrNull { it.name == savedInstanceState?.getString("connection-tab") } ?: ConnectionTab.CODE
+        connectionTab = ConnectionTab.entries.firstOrNull { it.name == savedInstanceState?.getString("connection-tab") } ?: ConnectionTab.DEVICES
+        showSettings = savedInstanceState?.getBoolean("settings-open") ?: false
+        pairCode = savedInstanceState?.getString("pair-code").orEmpty()
         SessionTraceRecorder.record(TAG, "Activity created")
 
         // A foreground service keeps the process alive after the task is swiped away. Restore the
@@ -164,10 +168,11 @@ class MainActivity : ComponentActivity() {
         bindWebRtcManager(ActiveCastingSession.manager)
         if (webRtcManager != null || ActiveCastingSession.captureStartPending) {
             currentScreen = AppScreen.SESSION
+            if (savedInstanceState == null) connectionTab = ConnectionTab.CODE
             sessionState = webRtcManager?.sessionState?.value ?: CastSessionState(
                 capture = CaptureState.STARTING
             )
-            statusText = "Restored casting session"
+            statusText = getString(R.string.session_connection_connected)
         }
 
         refreshStartupPermissions()
@@ -189,7 +194,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             ScreenCastTheme {
                 val receiverAction by receiverActions.state.collectAsStateWithLifecycle()
-                val needsDiscovery = currentScreen == AppScreen.HOME && (!showSettings || selectedLocalInstance != null) || receiverAction.device != null
+                val needsDiscovery = (!showSettings && connectionTab == ConnectionTab.DEVICES) || selectedLocalInstance != null || receiverAction.device != null
                 LaunchedEffect(needsDiscovery, discoveryRevision) {
                     if (needsDiscovery) repeatOnLifecycle(Lifecycle.State.STARTED) {
                         try { nsdDiscovery.discoverServices().collect { snapshot -> discoverySnapshot = snapshot; receiverActions.devicesChanged() } }
@@ -235,7 +240,7 @@ class MainActivity : ComponentActivity() {
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                         val data = result.data!!
                         val captureRequestId = ActiveCastingSession.beginCaptureStart()
-                        statusText = "Starting screen capture..."
+                        statusText = getString(R.string.session_capture_starting)
                         Log.i(TAG, "MediaProjection permission granted requestId=$captureRequestId")
                         // 1. Start foreground service immediately after permission granted.
                         // On Android 14+, the foreground service MUST be started before MediaProjection
@@ -261,7 +266,7 @@ class MainActivity : ComponentActivity() {
                                 SessionTraceRecorder.record(TAG, "Screen capture started")
                             } catch (e: Exception) {
                                 val readableError = e.readableMessage()
-                                statusText = "Screen capture failed: $readableError"
+                                statusText = getString(R.string.capture_failed, readableError)
                                 val manager = ActiveCastingSession.manager
                                 if (manager == null || !manager.sessionState.value.shouldKeepForegroundService) {
                                     ScreenCaptureService.stop(this@MainActivity)
@@ -274,7 +279,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         ActiveCastingSession.cancelCaptureStart()
                         ActiveCastingSession.manager?.markCapturePermissionDenied()
-                            ?: run { statusText = "Screen capture permission denied" }
+                            ?: run { statusText = getString(R.string.session_capture_permission_denied) }
                     }
                 }
                 val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
@@ -331,15 +336,16 @@ class MainActivity : ComponentActivity() {
                         isDownloadProgressVisible = isDownloadProgressVisible,
                         onShowDownloadProgress = { isDownloadProgressVisible = true },
                         onBack = { showSettings = false },
-                        onPermissions = { refreshStartupPermissions(); startupPermissions.open(startupPermissionSnapshot.audioGranted) })
-                } else when (currentScreen) {
-                    AppScreen.HOME -> HomeScreen(
+                        onPermissions = { refreshStartupPermissions(); startupPermissions.open(startupPermissionSnapshot.audioGranted) },
+                        onConnectionTabSelected = { receiverActions.cancel(); manageReceiver = false; connectionTab = it; showSettings = false })
+                } else when {
+                    currentScreen == AppScreen.HOME || connectionTab == ConnectionTab.DEVICES -> HomeScreen(
                         pairCode = pairCode,
                         statusText = statusText.takeUnless { it in setOf("Ready", getString(R.string.local_enter_code), getString(R.string.cloud_enter_code)) }.orEmpty(),
                         tab = connectionTab,
                         onTabSelected = { receiverActions.cancel(); manageReceiver = false; connectionTab = it; statusText = "" },
                         snapshot = discoverySnapshot,
-                        onSelectReceiver = { if (!isJoining) { manageReceiver = false; statusText = ""; receiverActions.select(it) } },
+                        onSelectReceiver = { if (!isJoining && currentScreen == AppScreen.HOME) { manageReceiver = false; statusText = ""; receiverActions.select(it) } },
                         onRefresh = { receiverActions.cancel(); discoverySnapshot = DiscoverySnapshot(scanning = true); discoveryRevision++; statusText = "" },
                         onNetworkSettings = ::openAppSettings,
                         isUpdateDownloadInProgress = isDownloadingUpdate,
@@ -354,8 +360,9 @@ class MainActivity : ComponentActivity() {
                         onCancelJoin = ::leaveRoom,
                         preparingReceiver = preparingReceiver,
                         onCancelPreparation = receiverActions::cancel,
-                        onReceiverOptions = { if (!isJoining) { manageReceiver = true; receiverActions.select(it) } })
-                    AppScreen.SESSION -> SessionScreen(
+                        onReceiverOptions = { if (!isJoining && currentScreen == AppScreen.HOME) { manageReceiver = true; receiverActions.select(it) } },
+                        sessionActive = currentScreen == AppScreen.SESSION)
+                    else -> SessionScreen(
                         statusText = statusText,
                         sessionState = sessionState,
                         isUpdateDownloadInProgress = isDownloadingUpdate,
@@ -385,7 +392,8 @@ class MainActivity : ComponentActivity() {
                         onShowDownloadProgress = { isDownloadProgressVisible = true },
                         remoteControlState = displayedRemoteState,
                         onRemoteSettings = { remoteSettingsResumeCapture = false; permissionDialog = PermissionDialog.REMOTE_EXPLANATION },
-                        onRemoteRetry = { webRtcManager?.retryRemoteControl() })
+                        onRemoteRetry = { webRtcManager?.retryRemoteControl() },
+                        onScan = { connectionTab = ConnectionTab.DEVICES })
                 }
 
                 if (startupState.showing && permissionDialog == null && !showLogUploadDialog && !showUpdateDialog) {
@@ -473,7 +481,8 @@ class MainActivity : ComponentActivity() {
                                         downloadProgress = progress
                                     }
                                 } catch (e: Exception) {
-                                    statusText = "Update failed: ${e.message}"
+                                    statusText = getString(R.string.update_failed, e.readableMessage())
+                                    updateMessage = statusText
                                 } finally {
                                     isDownloadingUpdate = false
                                     isDownloadProgressVisible = false
@@ -501,24 +510,25 @@ class MainActivity : ComponentActivity() {
     ) {
         AlertDialog(
             onDismissRequest = onDismiss,
-            title = { Text("New Update Available: ${updateInfo.version}") },
+            title = { Text(stringResource(R.string.update_title, updateInfo.version)) },
             text = {
                 Column {
+                    CastDialogBars()
                     if (updateInfo.changelog?.isNotBlank() == true) {
                         Text(updateInfo.changelog)
                         Spacer(modifier = Modifier.height(8.dp))
                     }
-                    Text("Would you like to download and install the new version?")
+                    Text(stringResource(R.string.update_body))
                 }
             },
             confirmButton = {
                 Button(onClick = onUpdate) {
-                    Text("Update Now")
+                    Text(stringResource(R.string.update_now))
                 }
             },
             dismissButton = {
                 TextButton(onClick = onDismiss) {
-                    Text("Later")
+                    Text(stringResource(R.string.ui_not_now))
                 }
             }
         )
@@ -528,9 +538,10 @@ class MainActivity : ComponentActivity() {
     private fun DownloadProgressDialog(progress: Float, onHide: () -> Unit) {
         AlertDialog(
             onDismissRequest = onHide,
-            title = { Text("Downloading Update...") },
+            title = { Text(stringResource(R.string.update_downloading)) },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
+                    CastDialogBars()
                     LinearProgressIndicator(
                         progress = { progress },
                         modifier = Modifier.fillMaxWidth()
@@ -538,13 +549,13 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("${(progress * 100).toInt()}%")
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("The download continues in the background.")
+                    Text(stringResource(R.string.update_background))
                 }
             },
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = onHide) {
-                    Text("Hide")
+                    Text(stringResource(R.string.update_hide))
                 }
             }
         )
@@ -726,7 +737,7 @@ class MainActivity : ComponentActivity() {
         if (isLogUploadInProgress) return
 
         isLogUploadInProgress = true
-        statusText = "Uploading logs..."
+        statusText = getString(R.string.logs_uploading)
 
         lifecycleScope.launch {
             try {
@@ -736,7 +747,7 @@ class MainActivity : ComponentActivity() {
                     description = description
                 )
                 statusText = buildString {
-                    append("Logs uploaded")
+                    append(getString(R.string.logs_uploaded, result.uploadId))
                     append("\nuploadId: ").append(result.uploadId)
                     if (!result.feedbackId.isNullOrBlank()) {
                         append("\nfeedbackId: ").append(result.feedbackId)
@@ -749,7 +760,7 @@ class MainActivity : ComponentActivity() {
                     "Log upload succeeded uploadId=${result.uploadId} feedbackId=${result.feedbackId ?: "<none>"} files=${result.fileCount}"
                 )
             } catch (e: Exception) {
-                statusText = "Log upload failed: ${e.readableMessage()}"
+                statusText = getString(R.string.logs_failed, e.readableMessage())
                 SessionTraceRecorder.record(TAG, "Log upload failed: ${e.readableMessage()}")
             } finally {
                 isLogUploadInProgress = false
@@ -786,7 +797,7 @@ class MainActivity : ComponentActivity() {
         val effectivePairCode = pairCode
 
         if (effectivePairCode.isBlank()) {
-            statusText = "Please enter a pair code"
+            statusText = getString(R.string.connection_invalid_code)
             return
         }
 
@@ -910,6 +921,8 @@ class MainActivity : ComponentActivity() {
         outState.putString("local-device-id", selectedLocalId)
         outState.putString("local-name", selectedLocalName)
         outState.putString("connection-tab", connectionTab.name)
+        outState.putBoolean("settings-open", showSettings)
+        outState.putString("pair-code", pairCode)
         super.onSaveInstanceState(outState)
     }
 

@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">NearHub Cast</string>
     <string name="startup_permission_title">Casting permission check</string>
@@ -20,10 +21,10 @@
     <string name="startup_defer">Set up later</string>
     <string name="ui_settings">Settings</string>
     <string name="ui_back">Back</string>
-    <string name="ui_code_tab">Pairing code</string>
-    <string name="ui_devices_tab">Find devices</string>
+    <string name="ui_code_tab">Code</string>
+    <string name="ui_devices_tab">Scan</string>
     <string name="ui_code_title">Enter pairing code</string>
-    <string name="ui_code_hint">Enter a 4-character cloud code, or choose a nearby device for local casting.</string>
+    <string name="ui_code_hint">Enter a 4-character cloud code, or choose a local receiver in Scan.</string>
     <string name="ui_local_code_hint">Enter the 4-character local code shown on this receiver.</string>
     <string name="ui_clear_receiver">Clear device and use a cloud code</string>
     <string name="ui_nearby_title">Nearby receivers</string>
@@ -69,7 +70,6 @@
     <string name="logs_uploading">Compressing and uploading logs…</string>
     <string name="logs_upload">Upload</string>
     <string name="logs_cancel">Cancel</string>
-
     <string name="screen_cast_channel_name">Screen casting</string>
     <string name="screen_cast_channel_description">NearHub Cast screen sharing status</string>
     <string name="notification_capture_starting">Starting screen sharing…</string>
@@ -79,13 +79,11 @@
     <string name="notification_capture_stopped">Screen sharing stopped. Tap to reselect content.</string>
     <string name="notification_capture_permission_denied">Screen sharing permission was not granted. Tap to retry.</string>
     <string name="notification_capture_error">Screen sharing needs attention. Tap to retry.</string>
-
     <string name="status_frame_content_hidden">Shared app is not visible\nReturn to the app to resume automatically</string>
     <string name="status_frame_screen_locked">Phone locked. Screen sharing stopped\nUnlock the phone and reselect content in NearHub Cast</string>
     <string name="status_frame_projection_stopped">Shared app closed or screen sharing stopped\nReselect content in NearHub Cast</string>
     <string name="status_frame_permission_denied">Screen sharing permission was not granted\nRetry in NearHub Cast</string>
     <string name="status_frame_capture_error">Screen sharing is temporarily unavailable\nReselect content in NearHub Cast</string>
-
     <string name="session_connection_title">Receiver connection</string>
     <string name="session_connection_idle">Not connected</string>
     <string name="session_connection_connecting">Connecting…</string>
@@ -213,4 +211,17 @@
     <string name="remote_rx_pending">The receiver is waiting for this device to confirm control.</string>
     <string name="remote_rx_rejected">The receiver could not open the input stream. Check its input mode or error message.</string>
     <string name="remote_rx_input_mode">The receiver could not start this input mode. Retry remote control or choose Native under Input mode.</string>
+    <string name="ui_active_session_hint">A receiver is connected. Open Code to manage your current cast.</string>
+    <string name="ui_current_cast">View current cast</string>
+    <string name="update_title">New version: %1$s</string>
+    <string name="update_body">Download and install the new version?</string>
+    <string name="update_now">Update now</string>
+    <string name="update_downloading">Downloading update…</string>
+    <string name="update_background">The download continues in the background.</string>
+    <string name="update_hide">Hide</string>
+    <string name="update_failed">Update failed: %1$s</string>
+    <string name="logs_default_description">NearHub Cast diagnostics</string>
+    <string name="logs_uploaded">Logs uploaded. Reference: %1$s</string>
+    <string name="logs_failed">Log upload failed: %1$s</string>
+    <string name="capture_failed">Screen sharing failed: %1$s</string>
 </resources>

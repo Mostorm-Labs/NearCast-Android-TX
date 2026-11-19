@@ -4,7 +4,7 @@ import org.webrtc.RtpParameters
 
 /** Screen text needs a larger budget than WebRTC's default camera-video ceiling. */
 internal object ScreenVideoQuality {
-    const val MAX_BITRATE_BPS = 12_000_000
+    const val MAX_BITRATE_BPS = 8_000_000
     const val MAX_FRAMERATE = 30
 
     fun configure(parameters: RtpParameters): Boolean {

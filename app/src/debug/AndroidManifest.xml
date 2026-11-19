@@ -1,5 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
-    <application android:label="NearHub Cast Debug" tools:replace="android:label">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
         <activity android:name="com.auditoryworks.nearcast.ui.AppearancePreviewActivity"
             android:exported="true" android:label="NearHub Cast UI preview"
             android:taskAffinity="${applicationId}.appearancepreview" android:excludeFromRecents="true" />

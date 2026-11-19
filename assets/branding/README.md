@@ -1,12 +1,12 @@
 # NearHub Cast Android branding
 
-- `nearhub-cast.svg` is the unchanged vector asset from [Figma Launcher, node 6862:1921](https://www.figma.com/design/VyCrgYgQadCLdj5nSjt0mJ/Launcher?node-id=6862-1921).
-- `nearhub-cast.png` is the unchanged 1166 × 1166 PNG export of that node. The same file is packaged as `drawable-nodpi/app_logo.png`; launcher density variants are resampled from it, preserving the complete artwork and aspect ratio.
-- API 26+ uses an adaptive icon with an 18 dp foreground inset and the design's `#439BFC` background. Older Android versions use the density-specific PNGs.
-- `drawable-nodpi/cast_background.webp` is reused unchanged from Desktop TX's `dist/assets/background.webp`.
-- `ui/theme/Theme.kt` and `ui/components/CastComponents.kt` adapt Desktop TX's `dist/styles.css`: `#10121C` background, `#1E212E` panels, `#7ADFFF` accents, `#438FFF → #6A62FF` primary buttons, 24 dp main panels and 11 dp buttons. Android keeps native text input, scrolling, system permissions and accessible touch targets.
+The current launcher source is `nearhub-cast.svg`, copied from Desktop TX's `src-tauri/icons/icon.svg` (artwork commit `2e4ac56`). This is the current dark-background variant of the NearHub Cast mark. The former blue-background export is replaced.
 
-Package names, signing, update product identifiers and media/input state machines are unaffected by these presentation resources.
+`nearhub-cast.png` and `drawable-nodpi/app_logo.png` are 512 × 512 rasterizations of that vector. Legacy launcher assets are rendered directly from the SVG at 48, 72, 96, 144 and 192 pixels for mdpi through xxxhdpi. API 26+ uses an adaptive icon with an 18 dp foreground inset and `#1E212E` background. API 33+ also supplies a monochrome version using the shared N mark, allowing the system launcher to apply themed icon colors.
+
+The in-app header uses the vector N mark with a semantic black/white tint. The app itself follows the system day/night setting with a neutral Material palette; the former image background and blue-purple gradients have been removed. Debug and Release both display the name **NearHub Cast**. Package names, signing, update identifiers, and media/input protocols are retained.
+
+The records below describe the earlier desktop-style presentation at the time it was tested.
 
 ## Validation (2026-11-18)
 

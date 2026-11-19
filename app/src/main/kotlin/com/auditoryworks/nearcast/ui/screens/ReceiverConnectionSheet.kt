@@ -28,8 +28,8 @@ fun ReceiverConnectionSheet(action: ReceiverActionState, onRetry: () -> Unit, on
         action.phase == ReceiverPhase.SHOWN && !manageDevice
     var options by remember(device.deviceId) { mutableStateOf(manageDevice) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = Color(0xFF171C2B), tonalElevation = 0.dp) {
-        CastDarkDialogBars()
+        containerColor = CastColors.Panel, tonalElevation = 0.dp) {
+        CastDialogBars()
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
             .navigationBarsPadding().padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

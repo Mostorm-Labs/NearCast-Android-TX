@@ -1,15 +1,11 @@
 package com.auditoryworks.nearcast.ui.theme
 
 import android.app.Activity
+import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.material3.Shapes
-import androidx.compose.material3.Typography
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
@@ -20,52 +16,57 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 
-/** Shared with Desktop TX's dist/styles.css. Keep branding independent of wallpaper colors. */
+/** Semantic colors resolve inside the current system-selected Material theme. */
 object CastColors {
-    val Background = Color(0xFF10121C)
-    val Panel = Color(0xFF1E212E)
-    val Field = Color(0xFF0C1020)
-    val Accent = Color(0xFF7ADFFF)
-    val Primary = Color(0xFF438FFF)
-    val PrimaryEnd = Color(0xFF6A62FF)
-    val Text = Color(0xFFE8EDF8)
-    val Muted = Color(0xFF9BA8BF)
-    val Subtle = Color(0xFF78869E)
-    val Border = Color(0x44B0B4C7)
-    val Divider = Color(0x18FFFFFF)
-    val Success = Color(0xFF72DEB2)
-    val Warning = Color(0xFFFFD08A)
+    val Background: Color @Composable get() = MaterialTheme.colorScheme.background
+    val Panel: Color @Composable get() = MaterialTheme.colorScheme.surface
+    val Field: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainerLow
+    val Accent: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+    val Primary: Color @Composable get() = MaterialTheme.colorScheme.primary
+    val Text: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+    val Muted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+    val Subtle: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+    val Border: Color @Composable get() = MaterialTheme.colorScheme.outlineVariant
+    val Divider: Color @Composable get() = MaterialTheme.colorScheme.outlineVariant
+    val Success: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+    val Warning: Color @Composable get() = MaterialTheme.colorScheme.onSurface
 }
 
-private val CastColorScheme = darkColorScheme(
-    primary = CastColors.Primary,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF203B62),
-    onPrimaryContainer = Color(0xFFA8EFFF),
-    secondary = CastColors.Accent,
-    onSecondary = CastColors.Background,
-    secondaryContainer = Color(0xFF203946),
-    onSecondaryContainer = CastColors.Accent,
-    tertiary = CastColors.Success,
-    onTertiary = CastColors.Background,
-    tertiaryContainer = Color(0xFF183D37),
-    onTertiaryContainer = CastColors.Success,
-    background = CastColors.Background,
-    onBackground = Color.White,
-    surface = CastColors.Panel,
-    onSurface = CastColors.Text,
-    surfaceVariant = Color(0xFF282E40),
-    onSurfaceVariant = CastColors.Muted,
-    surfaceContainer = Color(0xFF1B2030),
-    surfaceContainerHigh = Color(0xFF232A3B),
-    surfaceContainerHighest = Color(0xFF2B3347),
-    surfaceContainerLow = Color(0xFF171C2B),
-    outline = Color(0xFF48516A),
-    outlineVariant = CastColors.Divider,
-    error = Color(0xFFFFB6C1),
-    onError = Color(0xFF441220),
-    errorContainer = Color(0xFF572637),
-    onErrorContainer = Color(0xFFFFD9DF)
+private val LightColors = lightColorScheme(
+    primary = Color(0xFF171717), onPrimary = Color.White,
+    primaryContainer = Color(0xFFEAEAEA), onPrimaryContainer = Color(0xFF171717),
+    secondary = Color(0xFF171717), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFEAEAEA), onSecondaryContainer = Color(0xFF171717),
+    tertiary = Color(0xFF404040), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFEAEAEA), onTertiaryContainer = Color(0xFF171717),
+    background = Color(0xFFFAFAFA), onBackground = Color(0xFF171717),
+    surface = Color.White, onSurface = Color(0xFF171717),
+    surfaceVariant = Color(0xFFF0F0F0), onSurfaceVariant = Color(0xFF616161),
+    surfaceContainer = Color(0xFFF4F4F4), surfaceContainerLow = Color(0xFFF7F7F7),
+    surfaceContainerLowest = Color.White, surfaceContainerHigh = Color(0xFFEFEFEF),
+    surfaceContainerHighest = Color(0xFFE8E8E8), surfaceTint = Color.Transparent,
+    outline = Color(0xFF858585), outlineVariant = Color(0xFFE0E0E0),
+    error = Color(0xFF242424), onError = Color.White,
+    errorContainer = Color(0xFFEAEAEA), onErrorContainer = Color(0xFF171717),
+    inverseSurface = Color(0xFF242424), inverseOnSurface = Color(0xFFFAFAFA), inversePrimary = Color.White
+)
+private val DarkColors = darkColorScheme(
+    primary = Color(0xFFF5F5F5), onPrimary = Color(0xFF171717),
+    primaryContainer = Color(0xFF303030), onPrimaryContainer = Color(0xFFF5F5F5),
+    secondary = Color(0xFFF5F5F5), onSecondary = Color(0xFF171717),
+    secondaryContainer = Color(0xFF303030), onSecondaryContainer = Color(0xFFF5F5F5),
+    tertiary = Color(0xFFD4D4D4), onTertiary = Color(0xFF171717),
+    tertiaryContainer = Color(0xFF303030), onTertiaryContainer = Color(0xFFF5F5F5),
+    background = Color(0xFF101010), onBackground = Color(0xFFF5F5F5),
+    surface = Color(0xFF191919), onSurface = Color(0xFFF5F5F5),
+    surfaceVariant = Color(0xFF262626), onSurfaceVariant = Color(0xFFB5B5B5),
+    surfaceContainer = Color(0xFF202020), surfaceContainerLow = Color(0xFF222222),
+    surfaceContainerLowest = Color(0xFF101010), surfaceContainerHigh = Color(0xFF292929),
+    surfaceContainerHighest = Color(0xFF333333), surfaceTint = Color.Transparent,
+    outline = Color(0xFF858585), outlineVariant = Color(0xFF353535),
+    error = Color(0xFFE5E5E5), onError = Color(0xFF171717),
+    errorContainer = Color(0xFF303030), onErrorContainer = Color(0xFFF5F5F5),
+    inverseSurface = Color(0xFFE5E5E5), inverseOnSurface = Color(0xFF171717), inversePrimary = Color(0xFF171717)
 )
 
 private val CastTypography = Typography(
@@ -94,23 +95,25 @@ private val CastTypography = Typography(
 
 @Composable
 fun ScreenCastTheme(content: @Composable () -> Unit) {
+    val dark = isSystemInDarkTheme()
+    val colors = if (dark) DarkColors else LightColors
     val view = LocalView.current
     if (!view.isInEditMode) SideEffect {
         (view.context as? Activity)?.window?.let { window ->
             @Suppress("DEPRECATION")
-            window.statusBarColor = CastColors.Background.toArgb()
+            window.statusBarColor = colors.background.toArgb()
             @Suppress("DEPRECATION")
-            window.navigationBarColor = CastColors.Background.toArgb()
+            window.navigationBarColor = if (Build.VERSION.SDK_INT < 26) android.graphics.Color.BLACK else colors.background.toArgb()
             WindowCompat.getInsetsController(window, view).apply {
-                isAppearanceLightStatusBars = false
-                isAppearanceLightNavigationBars = false
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark && Build.VERSION.SDK_INT >= 26
             }
         }
     }
-    MaterialTheme(colorScheme = CastColorScheme, typography = CastTypography,
-        shapes = Shapes(extraSmall = RoundedCornerShape(7.dp), small = RoundedCornerShape(11.dp),
-            medium = RoundedCornerShape(14.dp), large = RoundedCornerShape(18.dp),
+    MaterialTheme(colorScheme = colors, typography = CastTypography,
+        shapes = Shapes(extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(12.dp),
+            medium = RoundedCornerShape(16.dp), large = RoundedCornerShape(20.dp),
             extraLarge = RoundedCornerShape(24.dp))) {
-        CompositionLocalProvider(LocalContentColor provides CastColors.Text, content = content)
+        CompositionLocalProvider(LocalContentColor provides colors.onSurface, content = content)
     }
 }

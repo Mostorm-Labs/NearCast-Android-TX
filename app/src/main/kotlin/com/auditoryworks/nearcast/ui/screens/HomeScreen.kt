@@ -66,43 +66,35 @@ fun HomeScreen(
     onCancelJoin: () -> Unit = {},
     preparingReceiver: String? = null,
     onCancelPreparation: () -> Unit = {},
-    onReceiverOptions: (ReceiverDevice) -> Unit = {}
+    onReceiverOptions: (ReceiverDevice) -> Unit = {},
+    sessionActive: Boolean = false
 ) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val codeFocus = remember { FocusRequester() }
     LaunchedEffect(tab, localReceiverName) {
-        if (tab == ConnectionTab.CODE && localReceiverName != null) {
+        if (tab == ConnectionTab.CODE && localReceiverName != null && pairCode.isEmpty()) {
             codeFocus.requestFocus()
             keyboard?.show()
         }
     }
-    CastScaffold(isUpdateDownloadInProgress, isDownloadProgressVisible, onOpenSettings, onShowDownloadProgress) {
+    CastScaffold(isUpdateDownloadInProgress, isDownloadProgressVisible, onOpenSettings, onShowDownloadProgress,
+        selectedTab = if (tab == ConnectionTab.CODE) AppTab.CODE else AppTab.SCAN,
+        onTabSelected = {
+            focus.clearFocus(); keyboard?.hide()
+            if (it == AppTab.SETTINGS) onOpenSettings()
+            else onTabSelected(if (it == AppTab.SCAN) ConnectionTab.DEVICES else ConnectionTab.CODE)
+        }) {
         CastPanel {
-            Row(Modifier.fillMaxWidth().background(CastColors.Field.copy(alpha = .6f), RoundedCornerShape(12.dp))
-                .border(1.dp, CastColors.Divider, RoundedCornerShape(12.dp)).padding(4.dp).selectableGroup()) {
-                for (item in ConnectionTab.entries) {
-                    val selected = tab == item
-                    Box(Modifier.weight(1f).clipTab(selected).selectable(selected, enabled = !isJoining, role = Role.Tab,
-                        onClick = { focus.clearFocus(); keyboard?.hide(); onTabSelected(item) })
-                        .defaultMinSize(minHeight = 48.dp).padding(horizontal = 8.dp, vertical = 12.dp),
-                        contentAlignment = Alignment.Center) {
-                        Text(stringResource(if (item == ConnectionTab.CODE) R.string.ui_code_tab else R.string.ui_devices_tab),
-                            color = if (selected) CastColors.Accent else CastColors.Muted,
-                            style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
-                    }
-                }
-            }
-            Spacer(Modifier.height(24.dp))
             if (tab == ConnectionTab.CODE) {
                 Text(stringResource(R.string.ui_code_title), style = MaterialTheme.typography.headlineSmall,
-                    color = Color.White, textAlign = TextAlign.Center)
+                    color = CastColors.Text, textAlign = TextAlign.Center)
                 Spacer(Modifier.height(8.dp))
                 Text(stringResource(if (localReceiverName != null) R.string.ui_local_code_hint else R.string.ui_code_hint),
                     style = MaterialTheme.typography.bodyMedium, color = CastColors.Muted, textAlign = TextAlign.Center)
                 if (localReceiverName != null) {
                     Spacer(Modifier.height(16.dp))
-                    Surface(shape = RoundedCornerShape(9.dp), color = Color(0x127ADFFF)) {
+                    Surface(shape = RoundedCornerShape(9.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
                         Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Tv, null, Modifier.size(18.dp), tint = CastColors.Accent)
                             Spacer(Modifier.width(8.dp))
@@ -120,14 +112,19 @@ fun HomeScreen(
                 CastPrimaryButton(onClick = { keyboard?.hide(); onJoin() }, modifier = Modifier.fillMaxWidth(),
                     enabled = pairCode.length == 4 && !isJoining) {
                     if (isJoining) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                         Spacer(Modifier.width(8.dp))
                     }
                     Text(stringResource(if (isJoining) R.string.connection_connecting else R.string.connection_join))
                 }
                 if (isJoining) TextButton(onClick = onCancelJoin) { Text(stringResource(R.string.connection_cancel)) }
             } else {
-                ReceiverList(snapshot, enabled = !isJoining, onSelect = { focus.clearFocus(); keyboard?.hide(); onSelectReceiver(it) },
+                if (sessionActive || isJoining) {
+                    CastStatusNotice(stringResource(R.string.ui_active_session_hint))
+                    TextButton(onClick = { onTabSelected(ConnectionTab.CODE) }) { Text(stringResource(R.string.ui_current_cast)) }
+                    Spacer(Modifier.height(16.dp))
+                }
+                ReceiverList(snapshot, enabled = !isJoining && !sessionActive, onSelect = { focus.clearFocus(); keyboard?.hide(); onSelectReceiver(it) },
                     onRefresh = onRefresh, onNetworkSettings = onNetworkSettings, preparingReceiver = preparingReceiver,
                     onOptions = onReceiverOptions)
                 if (preparingReceiver != null) TextButton(onClick = onCancelPreparation) {
@@ -141,9 +138,6 @@ fun HomeScreen(
         }
     }
 }
-
-private fun Modifier.clipTab(selected: Boolean): Modifier =
-    background(if (selected) Color(0x30438FFF) else Color.Transparent, RoundedCornerShape(8.dp))
 
 @Composable
 private fun ReceiverList(snapshot: DiscoverySnapshot, enabled: Boolean, onSelect: (ReceiverDevice) -> Unit,
@@ -172,7 +166,7 @@ private fun ReceiverList(snapshot: DiscoverySnapshot, enabled: Boolean, onSelect
         }
         snapshot.devices.forEach { device ->
             Surface(Modifier.fillMaxWidth().clickable(enabled = enabled && device.selectable && preparingReceiver != device.instance) { onSelect(device) },
-                shape = RoundedCornerShape(11.dp), color = Color(0x08FFFFFF),
+                shape = RoundedCornerShape(14.dp), color = CastColors.Field,
                 border = androidx.compose.foundation.BorderStroke(1.dp, CastColors.Divider)) {
                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -201,7 +195,7 @@ private fun PairCodeInput(code: String, onCodeChange: (String) -> Unit, enabled:
     var focused by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     val description = stringResource(R.string.connection_pair_code)
-    BasicTextField(value = code, onValueChange = { onCodeChange(it.uppercase().take(4)) }, enabled = enabled, singleLine = true,
+    BasicTextField(value = code, onValueChange = { onCodeChange(it.uppercase(java.util.Locale.ROOT).take(4)) }, enabled = enabled, singleLine = true,
         modifier = Modifier.fillMaxWidth().focusRequester(focusRequester).onFocusChanged { focused = it.isFocused }
             .semantics { contentDescription = description },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, capitalization = KeyboardCapitalization.Characters,
@@ -215,9 +209,9 @@ private fun PairCodeInput(code: String, onCodeChange: (String) -> Unit, enabled:
                     repeat(4) { index ->
                         val selected = focused && index == code.length.coerceAtMost(3)
                         Box(Modifier.weight(1f).height(56.dp).background(CastColors.Field, RoundedCornerShape(11.dp))
-                            .border(if (selected) 2.dp else 1.dp, if (selected) CastColors.Accent else Color(0x34FFFFFF), RoundedCornerShape(11.dp)),
+                            .border(if (selected) 2.dp else 1.dp, if (selected) CastColors.Accent else CastColors.Border, RoundedCornerShape(11.dp)),
                             contentAlignment = Alignment.Center) {
-                            Text(code.getOrNull(index)?.toString().orEmpty(), color = Color.White,
+                            Text(code.getOrNull(index)?.toString().orEmpty(), color = CastColors.Text,
                                 style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                         }
                     }
