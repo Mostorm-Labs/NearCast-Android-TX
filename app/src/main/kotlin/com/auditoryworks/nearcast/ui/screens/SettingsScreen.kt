@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -32,7 +33,8 @@ fun SettingsScreen(
     isUpdateDownloadInProgress: Boolean,
     isDownloadProgressVisible: Boolean,
     onShowDownloadProgress: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onPermissions: () -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
     CastScaffold(isUpdateDownloadInProgress, isDownloadProgressVisible, {}, onShowDownloadProgress,
@@ -40,6 +42,13 @@ fun SettingsScreen(
         RemoteControlCard(remoteControlState, onRemoteEnabled, onRemoteSettings, onRemoteHelp, onRemoteRetry)
         CastInsetPanel {
             Text(stringResource(R.string.ui_help_updates), style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Default.FactCheck, null, tint = CastColors.Accent)
+                Text(stringResource(R.string.startup_permission_title), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                TextButton(onClick = onPermissions) { Text(stringResource(R.string.ui_view_update)) }
+            }
+            HorizontalDivider(color = CastColors.Divider)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(Icons.Default.SystemUpdate, null, tint = CastColors.Accent)

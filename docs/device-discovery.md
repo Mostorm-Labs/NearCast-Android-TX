@@ -1,10 +1,10 @@
 # 接收端发现、本地投屏与设备信任
 
-首页的“发现接收端”提供：同网发现 → 首次现场核对完整指纹 → 保存设备信任 → 请求接收端显示本地配对码 → 选择“使用此设备的本地配对码” → 手动输入后连接。扫描和核对阶段不打开信令 WebSocket、不自动填码或授予反控权限；明确连接后才建立本地 WSS。
+当前流程（2026-11-19）：首页“附近设备”提供同网发现 → 选择设备 → 后台绑定所选设备的 TLS 公钥 → 请求显示本地配对码 → 自动进入输码页 → 手动输入后连接。不再弹指纹核对、勾选或额外的“使用此设备”确认。准备阶段不打开信令 WebSocket、不自动填码或授予反控权限；明确连接后才建立本地 WSS。
 
 ## 协议与职责
 
-协议参考是 Desktop TX 的 `src/discovery/devices.mjs`、`src-tauri/src/discovery.rs`、`trust.rs`、`pinned_tls.rs` 和 `src/webcast/receiver-trust.mjs`。本次只修改 Android 仓库，没有修改或发布桌面端。
+协议参考是 Desktop TX 的 `src/discovery/devices.mjs`、`src-tauri/src/discovery.rs`、`trust.rs`、`pinned_tls.rs` 和 `src/webcast/receiver-trust.mjs`。自动绑定流程对齐 `codex/tx-figma-main-ui` 的 `51c3bb6` 中 `nearcast_trust_pair` / `pair_observed`；本次只修改 Android 仓库，没有修改或发布桌面端。
 
 | 模块 | 职责 |
 | --- | --- |
@@ -12,9 +12,9 @@
 | `NsdDiscoveryManager` | Android 系统 DNS-SD 浏览；API 34+ 连续服务信息回调，旧系统串行解析和刷新；关闭、后台、丢失服务后清理当前原生路由 |
 | `ReceiverDirectory` | 有界列表、实例去重、解析代次；迟到解析不能恢复丢失或前一次扫描的设备 |
 | `ReceiverTls` | 原生解析地址上的固定 HTTPS 操作，TLS SPKI 校验先于任何 HTTP 字节；无代理、跳转、Cookie 或环境凭据 |
-| `ReceiverActions` | 选择、现场核对、超时、取消、显码、密钥变化和撤销状态机；跨 Activity 串行化信任写入及请求 |
+| `ReceiverActions` | 自动绑定、超时、取消、显码、密钥变化和撤销状态机；跨 Activity 串行化密钥保存及请求 |
 | `ReceiverTrustStore` | 应用私有存储，按精确 deviceId 保存指纹；校验格式、容量和持久化结果，损坏或写入失败时停止信任操作 |
-| `DeviceDiscoveryBottomSheet` | 中英文设备列表、完整指纹及明确确认、失败重试、移除信任和手动连接入口 |
+| `HomeScreen` / `ReceiverConnectionSheet` | 页内设备列表、后台准备、失败重试、移除连接记录和手动连接入口；不显示指纹或确认勾选 |
 
 只浏览 `_nearcast._tcp.`，不再使用旧 `_webrtc-signal._tcp.`；不将 AirPlay、RAOP 或其他服务伪装成 NearCast 接收端。设备名称来自 display TXT 或实例名，路由只来自系统解析的 A/AAAA 地址和 SRV 端口。TXT 中的 endpoint 可以用于协议格式校验，但不能提供实际目的地址；TXT 里的配对码、token、room、password、secret 等字段使整条记录被拒绝。
 
@@ -22,22 +22,21 @@
 
 ## 固定 HTTPS 与指纹信任
 
-指纹是叶证书 **SHA256(DER SubjectPublicKeyInfo)**，完整 64 位大写十六进制，按原始 deviceId 区分大小写。与桌面端一致，信任物理核对过的公钥，允许接收端自签名证书、地址变化以及同公钥重新签发证书；其他 HTTPS、更新、云信令客户端继续使用自己的 TLS 策略。
+密钥 pin 是叶证书 **SHA256(DER SubjectPublicKeyInfo)**，完整 64 位大写十六进制，按原始 deviceId 区分大小写。首次绑定采用与当前桌面端一致的首次观察公钥绑定（TOFU），不再宣称经过人工现场指纹核对。允许接收端自签名证书、地址变化以及同公钥重新签发证书；其他 HTTPS、更新、云信令客户端继续使用自己的 TLS 策略。
 
 1. 首次选择先进行 TLS 观察，只读取证书公钥并关闭，不发送 HTTP。
-2. 用刚观察到的公钥完成新的 TLS 握手后，POST `/nearcast/trust-display`。
-3. 接收端返回 shown 后显示完整指纹。用户必须在现场逐组核对并勾选一致，再点击信任。候选一分钟过期，切换、离线或取消立即失效。
-4. 保存成功后，POST `/nearcast/code-display`。之后的显码请求必须在 TLS 握手中匹配保存的公钥；公钥变化时，在 HTTP 发送前拒绝，要求重新现场确认。
+2. 再次确认发现路由、实例及存储记录仍匹配。取消、离线或观察期间撤销不能被迟到结果恢复。
+3. 未保存过的设备自动保存观察公钥；已有记录仅接受同一公钥，不重复写入，也不静默替换变化的密钥。
+4. 保存成功后，用固定公钥的新 TLS 握手 POST `/nearcast/code-display`，不发送 `/nearcast/trust-display`。公钥变化时在 HTTP 前拒绝；用户须明确移除旧连接记录后再重新配对。
 5. 移除信任会取消本窗口请求并串行等待已经开始的操作；队列中的请求重新读取当前 pin，不继续使用已撤销的旧 pin。离线设备也可移除已保存的信任。
 
 请求格式保持桌面端约定，version 为 1，requestId 每次独立生成：
 
 ```json
-{"type":"nearcast.trust_display.request","version":1,"deviceId":"receiver-id","requestId":"..."}
 {"type":"nearcast.code_display.request","version":1,"deviceId":"receiver-id","requestId":"...","reason":"sender-device-selected"}
 ```
 
-响应类型分别为 `nearcast.trust_display.result` / `nearcast.code_display.result`。校验版本、requestId、状态及可选设备身份；只投影 shown、unavailable、rate_limited、not_supported 状态。指纹不来自响应或 TXT，配对码不来自发现或 HTTP 响应。指纹响应仅接受四个约定字段。
+正常流程使用 `nearcast.code_display.result`。校验版本、requestId、状态及可选设备身份；只投影 shown、unavailable、rate_limited、not_supported 状态。公钥不来自响应或 TXT，配对码不来自发现或 HTTP 响应。旧 trust-display 的解析测试仍作为兼容语料保留，不用于产品引导。
 
 请求最多 1KiB，响应体最多 4KiB，响应头最多 8KiB，连接及整个操作均有时限。拒绝重定向、Transfer-Encoding、重复或缺失 Content-Length。连接可在原生解析地址之间有界尝试，HTTP 已开始后不在其他地址重复执行同一个请求。取消会关闭实际 Socket，迟到返回不能保存信任、恢复选择或触发显码。
 
@@ -71,13 +70,13 @@ adb shell am start -n com.auditoryworks.nearcast.dev/com.auditoryworks.nearcast.
 adb shell am start -n com.auditoryworks.nearcast.dev/com.auditoryworks.nearcast.MainActivity
 ```
 
-从首页发现并选择“NearCast 测试接收端”。测试证书的完整指纹显示在夹具页面与本机日志中；核对这些专用测试指纹不等同于为真实接收端建立信任。调试专用显式控制广播可以执行 `rotate-key`、`withdraw`、`restore`、`rate_limited`、`unavailable`、`shown`、`stop`；不会控制其他设备。
+从首页发现并选择“NearCast 测试接收端”。客户端自动保存其测试公钥并请求配对码；可用夹具证书和应用私有存储比对绑定值，无需人工确认页面。调试专用显式控制广播可以执行 `rotate-key`、`withdraw`、`restore`、`rate_limited`、`unavailable`、`shown`、`stop`；不会控制其他设备。
 
 ```powershell
 adb shell am broadcast -n com.auditoryworks.nearcast.dev/com.auditoryworks.nearcast.discovery.DiscoveryFixtureControl --es action rotate-key
 ```
 
-真机截图与夹具操作日志保存于被 Git 忽略的 `build/discovery-evidence/` 与 `build/local-evidence/`。实际硬件接收端的现场指纹核对、不同网段和组播隔离等拓扑需在目标网络验证，本地夹具不替代这些外部验收。
+真机截图与夹具操作日志保存于被 Git 忽略的 `build/discovery-evidence/` 与 `build/local-evidence/`。实际 RX 硬件兼容性、不同网段和组播隔离等拓扑需在目标网络验证，本地夹具不替代这些外部验收。下列较早记录描述当时的人工核对流程，当前产品流程已改为后台自动绑定。
 
 本地媒体夹具可运行 `scripts/device-peer.mjs`，设置 `NEARCAST_LOCAL_WEBCAST_FIXTURE=1`，并用 `adb reverse tcp:18888 tcp:18888`。启动 `DiscoveryFixtureActivity --ez webcast true` 后，调试夹具将自有 TLS WSS 转发到电脑的独立 WebCast 房间服务器。测试码固定为 TEST，仅适用于该自有夹具。浏览器按 RX 的来源身份、整屏、几何版本字符串及请求确认规则检查后，才打开 AXTP 输入流。该代理只在 debug 源集中，正式本地投屏直接连接接收端。
 
@@ -98,3 +97,10 @@ adb shell am broadcast -n com.auditoryworks.nearcast.dev/com.auditoryworks.nearc
 - 按住期间旋转产生 ACTION_CANCEL；视频改为 2400×1080，新 sourceBindingId 与几何版本绑定后恢复输入。恢复竖屏后仍可重新绑定。关闭本机反控上报 LOCAL_INPUT_DISABLED / denied，视频继续；关闭 control 通道后 peer 仍 connected，已解码帧继续增加且音视频轨道保持 live。
 - 退出后确认 MediaProjection 为 null、旋转模式恢复原来的 free、反控本机开关恢复开启。专用测试 pin、mDNS/TLS 夹具、浏览器接收进程及 adb reverse 已清理。
 - 本轮联调为真实 Pixel 7 加独立浏览器／自有本地接收夹具；已逐字段核对 RX 源码，但未操作用户实际 RX 的现场指纹或实际房间，不把夹具验收记作真实 RX 硬件验收。
+
+### 2026-11-19 自动配对验证
+
+- Pixel 7 / Android 17 上使用独立的 `.permissioncheck` 调试包完成真实 NSD、TLS 和持久存储验证，保留用户原 `.dev` 包的连接记录和权限。
+- 选择自有测试接收端后直接进入本地配对码页；测试服务器只收到一次 CODE 请求，没有 TRUST 请求、指纹确认页或确认复选框。应用保存的 SPKI 与测试证书相同。
+- 轮换测试服务器公钥并重新选择后，页面显示身份变化并阻止连接；原 SPKI 未被覆盖，服务器没有收到额外 CODE 请求。
+- 验证结束停止测试服务并卸载本轮新建的独立测试包；未改动真实接收端。此项不等同于远端 RX 媒体和反控的端到端验收。

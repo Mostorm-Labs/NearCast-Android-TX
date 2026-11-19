@@ -44,6 +44,8 @@ import com.auditoryworks.nearcast.discovery.*
 import com.auditoryworks.nearcast.ui.screens.ReceiverConnectionSheet
 import com.auditoryworks.nearcast.ui.screens.ConnectionTab
 import com.auditoryworks.nearcast.ui.screens.SettingsScreen
+import com.auditoryworks.nearcast.ui.screens.StartupPermissionDialog
+import com.auditoryworks.nearcast.permissions.*
 import com.auditoryworks.nearcast.ui.screens.CapturePermissionDialog
 import com.auditoryworks.nearcast.ui.screens.PermissionDialog
 import com.auditoryworks.nearcast.diagnostics.LogUploadManager
@@ -121,6 +123,9 @@ class MainActivity : ComponentActivity() {
     private var permissionReturnJob: Job? = null
     private var startCaptureAfterPermissions: (() -> Unit)? = null
     private val permissionPrefs get() = getSharedPreferences("permission-ui", MODE_PRIVATE)
+    private val startupPermissions = StartupPermissionFlow()
+    private var startupPermissionSnapshot by mutableStateOf(StartupPermissionSnapshot())
+    private var startupSettingsPending = false
     private var showLogUploadDialog by mutableStateOf(false)
     private var showSettings by mutableStateOf(false)
     private var manageReceiver by mutableStateOf(false)
@@ -165,6 +170,18 @@ class MainActivity : ComponentActivity() {
             statusText = "Restored casting session"
         }
 
+        refreshStartupPermissions()
+        if (savedInstanceState?.getBoolean("startup-checked", false) == true) {
+            startupPermissions.restore(StartupPermissionState(checked = true,
+                showing = savedInstanceState.getBoolean("startup-showing"),
+                pending = StartupPermission.entries.firstOrNull { it.name == savedInstanceState.getString("startup-pending") },
+                audioGrantedAtCheck = savedInstanceState.getBoolean("startup-audio-ready")))
+            startupSettingsPending = savedInstanceState.getBoolean("startup-settings-pending")
+        }
+        startupPermissions.check(permissionPrefs.getBoolean("startup-introduced", false),
+            startupPermissionSnapshot.audioGranted,
+            sessionState.isProjectionActive || sessionState.isCaptureBusy || ActiveCastingSession.captureStartPending)
+
         lifecycleScope.launch {
             updateInfo = UpdateManager.checkUpdate()
         }
@@ -193,12 +210,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 val preparingReceiver = receiverAction.device?.instance?.takeIf {
-                    receiverAction.phase in setOf(ReceiverPhase.CHECKING, ReceiverPhase.PREPARING, ReceiverPhase.SHOWING)
+                    receiverAction.phase in setOf(ReceiverPhase.CHECKING, ReceiverPhase.PREPARING, ReceiverPhase.SAVING, ReceiverPhase.SHOWING)
                 }
                 if (receiverAction.device != null && (manageReceiver || preparingReceiver == null && receiverAction.phase != ReceiverPhase.SHOWN) &&
                     currentScreen == AppScreen.HOME && !showSettings && !isJoining) ReceiverConnectionSheet(receiverAction,
-                    onConfirm = receiverActions::confirm,
-                    onTrust = receiverActions::retryTrust, onCode = receiverActions::showCode,
+                    onRetry = receiverActions::retryTrust, onCode = receiverActions::showCode,
                     onForget = {
                         if (selectedLocalId != null && selectedLocalId == receiverAction.device?.deviceId) {
                             selectedLocalInstance = null; selectedLocalId = null; selectedLocalName = ""; pairCode = ""
@@ -209,6 +225,7 @@ class MainActivity : ComponentActivity() {
                     onManualEntry = { useCloud(); receiverActions.cancel(); manageReceiver = false },
                     onDismiss = { receiverActions.cancel(); manageReceiver = false }, manageDevice = manageReceiver)
                 val accessState by RemoteControlAccess.state.collectAsStateWithLifecycle()
+                val startupState by startupPermissions.state.collectAsStateWithLifecycle()
                 val displayedRemoteState = if (webRtcManager == null) accessState else remoteControlState
                 val mediaProjectionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
@@ -280,6 +297,12 @@ class MainActivity : ComponentActivity() {
                     if (isPendingStartValid()) requestAudioPermissionAndStartCast(mediaProjectionLauncher)
                 }
 
+                val startupPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+                    // This result only refreshes startup state; it never enters a capture request.
+                    startupPermissions.returned()
+                    refreshStartupPermissions()
+                }
+
                 startCaptureAfterPermissions = {
                     if (isPendingStartValid()) requestNotificationPermissionAndStartCast(
                         notificationPermissionLauncher, mediaProjectionLauncher)
@@ -307,7 +330,8 @@ class MainActivity : ComponentActivity() {
                         isUpdateDownloadInProgress = isDownloadingUpdate,
                         isDownloadProgressVisible = isDownloadProgressVisible,
                         onShowDownloadProgress = { isDownloadProgressVisible = true },
-                        onBack = { showSettings = false })
+                        onBack = { showSettings = false },
+                        onPermissions = { refreshStartupPermissions(); startupPermissions.open(startupPermissionSnapshot.audioGranted) })
                 } else when (currentScreen) {
                     AppScreen.HOME -> HomeScreen(
                         pairCode = pairCode,
@@ -362,6 +386,31 @@ class MainActivity : ComponentActivity() {
                         remoteControlState = displayedRemoteState,
                         onRemoteSettings = { remoteSettingsResumeCapture = false; permissionDialog = PermissionDialog.REMOTE_EXPLANATION },
                         onRemoteRetry = { webRtcManager?.retryRemoteControl() })
+                }
+
+                if (startupState.showing && permissionDialog == null && !showLogUploadDialog && !showUpdateDialog) {
+                    StartupPermissionDialog(startupState, startupPermissionSnapshot, displayedRemoteState,
+                        projectionActive = sessionState.isProjectionActive,
+                        onAudio = {
+                            if (startupPermissions.request(StartupPermission.AUDIO)) {
+                                if (startupPermissionSnapshot.audioNeedsSettings) {
+                                    startupSettingsPending = true; openAppSettings()
+                                } else {
+                                    permissionPrefs.edit().putBoolean("audio-requested", true).apply()
+                                    startupPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        }, onNotifications = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && startupPermissions.request(StartupPermission.NOTIFICATIONS)) {
+                                if (startupPermissionSnapshot.notificationsNeedSettings) {
+                                    startupSettingsPending = true; openAppSettings()
+                                } else {
+                                    permissionPrefs.edit().putBoolean("notifications-requested", true).apply()
+                                    startupPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                            }
+                        }, onRemote = { remoteSettingsResumeCapture = false; permissionDialog = PermissionDialog.REMOTE_EXPLANATION },
+                        onContinue = { finishStartupSetup(defer = false) }, onDefer = { finishStartupSetup(defer = true) })
                 }
 
                 permissionDialog?.let { kind ->
@@ -501,6 +550,28 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun refreshStartupPermissions() {
+        val audioGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val supportsNotifications = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        val notificationsGranted = !supportsNotifications ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        startupPermissionSnapshot = StartupPermissionSnapshot(
+            audioGranted = audioGranted,
+            audioNeedsSettings = !audioGranted && permissionPrefs.getBoolean("audio-requested", false) &&
+                !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO),
+            notificationsGranted = notificationsGranted,
+            notificationsNeedSettings = supportsNotifications && !notificationsGranted &&
+                permissionPrefs.getBoolean("notifications-requested", false) &&
+                !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS),
+            notificationsSupported = supportsNotifications)
+    }
+
+    private fun finishStartupSetup(defer: Boolean) {
+        val audioGranted = startupPermissionSnapshot.audioGranted
+        val closed = if (defer) startupPermissions.defer(audioGranted) else startupPermissions.finish(audioGranted)
+        if (closed) permissionPrefs.edit().putBoolean("startup-introduced", true).apply()
+    }
+
     private fun requestNotificationPermissionAndStartCast(
         notificationPermissionLauncher: androidx.activity.result.ActivityResultLauncher<String>,
         mediaProjectionLauncher: androidx.activity.result.ActivityResultLauncher<Intent>
@@ -579,13 +650,21 @@ class MainActivity : ComponentActivity() {
 
     private fun openAppSettings() {
         try { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }
-        catch (_: ActivityNotFoundException) { audioSettingsSession = null; permissionDialog = PermissionDialog.SETTINGS_UNAVAILABLE }
-        catch (_: SecurityException) { audioSettingsSession = null; permissionDialog = PermissionDialog.SETTINGS_UNAVAILABLE }
+        catch (_: ActivityNotFoundException) {
+            audioSettingsSession = null; startupSettingsPending = false; startupPermissions.returned()
+            permissionDialog = PermissionDialog.SETTINGS_UNAVAILABLE
+        }
+        catch (_: SecurityException) {
+            audioSettingsSession = null; startupSettingsPending = false; startupPermissions.returned()
+            permissionDialog = PermissionDialog.SETTINGS_UNAVAILABLE
+        }
     }
 
     override fun onResume() {
         super.onResume()
         RemoteControlAccess.refresh()
+        refreshStartupPermissions()
+        if (startupSettingsPending) { startupSettingsPending = false; startupPermissions.returned() }
         val checkRemote = checkingRemoteSettings
         val audioSession = audioSettingsSession
         if (!checkRemote && audioSession == null) return
@@ -821,6 +900,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        val startup = startupPermissions.state.value
+        outState.putBoolean("startup-checked", startup.checked)
+        outState.putBoolean("startup-showing", startup.showing)
+        outState.putString("startup-pending", startup.pending?.name)
+        outState.putBoolean("startup-audio-ready", startup.audioGrantedAtCheck)
+        outState.putBoolean("startup-settings-pending", startupSettingsPending)
         outState.putString("local-instance", selectedLocalInstance)
         outState.putString("local-device-id", selectedLocalId)
         outState.putString("local-name", selectedLocalName)

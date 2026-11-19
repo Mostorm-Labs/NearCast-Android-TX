@@ -7,6 +7,7 @@ import androidx.compose.runtime.*
 import com.auditoryworks.nearcast.discovery.*
 import com.auditoryworks.nearcast.session.*
 import com.auditoryworks.nearcast.touchback.*
+import com.auditoryworks.nearcast.permissions.*
 import com.auditoryworks.nearcast.ui.screens.*
 import com.auditoryworks.nearcast.ui.theme.ScreenCastTheme
 
@@ -28,6 +29,8 @@ class AppearancePreviewActivity : ComponentActivity() {
                 var localName by remember { mutableStateOf<String?>(null) }
                 var tab by remember { mutableStateOf(if (firstScreen == "devices") ConnectionTab.DEVICES else ConnectionTab.CODE) }
                 var permissionDialog by remember { mutableStateOf<PermissionDialog?>(null) }
+                var startupGuide by remember { mutableStateOf(firstScreen == "startup") }
+                var startupSnapshot by remember { mutableStateOf(StartupPermissionSnapshot()) }
                 var capture by remember { mutableStateOf(when (requested) {
                     "ready" -> CaptureState.IDLE
                     "reselect" -> CaptureState.AWAITING_RESELECTION
@@ -42,7 +45,7 @@ class AppearancePreviewActivity : ComponentActivity() {
                     inputState = if (capture == CaptureState.ACTIVE && authorized) "active" else "closed")) }
                 val openSettings = { previous = screen; screen = "settings" }
                 when (screen) {
-                    "home", "devices" -> HomeScreen(code, "", tab, { tab = it }, DiscoverySnapshot(devices, true),
+                    "home", "devices", "startup" -> HomeScreen(code, "", tab, { tab = it }, DiscoverySnapshot(devices, true),
                         onSelectReceiver = { localName = it.name; tab = ConnectionTab.CODE }, onRefresh = {}, onNetworkSettings = {},
                         isUpdateDownloadInProgress = false, isDownloadProgressVisible = false,
                         onPairCodeChange = { code = it }, onJoin = { screen = "session"; capture = CaptureState.IDLE },
@@ -50,13 +53,13 @@ class AppearancePreviewActivity : ComponentActivity() {
                         onUseCloud = { localName = null; code = "" })
                     "settings" -> SettingsScreen(remote, { remote = remote.copy(enabled = it) },
                         { permissionDialog = PermissionDialog.REMOTE_EXPLANATION }, { permissionDialog = PermissionDialog.REMOTE_HELP }, {},
-                        false, {}, false, null, "", {}, false, false, {}, { screen = previous })
-                    "trust" -> {
+                        false, {}, false, null, "", {}, false, false, {}, { screen = previous }, onPermissions = { startupGuide = true })
+                    "trust", "device-options" -> {
                         HomeScreen("", "", ConnectionTab.DEVICES, {}, DiscoverySnapshot(devices, true), {}, {}, {}, false, false, {}, {}, {}, {})
                         val pin = "A1B2C3D4".repeat(8)
-                        ReceiverConnectionSheet(ReceiverActionState(ReceiverPhase.COMPARE, devices[0],
-                            TrustCandidate(devices[0], pin, 1, Long.MAX_VALUE), fingerprint = pin),
-                            { screen = "home" }, {}, {}, {}, {}, {}, { screen = "home" })
+                        ReceiverConnectionSheet(ReceiverActionState(ReceiverPhase.SHOWN, devices[0], fingerprint = pin),
+                            onRetry = {}, onCode = {}, onForget = {}, onLocalEntry = { screen = "home" },
+                            onManualEntry = { screen = "home" }, onDismiss = { screen = "home" }, manageDevice = true)
                     }
                     else -> SessionScreen("", CastSessionState(
                         transport = if (requested == "disconnected") TransportState.DISCONNECTED else TransportState.CONNECTED,
@@ -67,6 +70,12 @@ class AppearancePreviewActivity : ComponentActivity() {
                         onLeave = { screen = "home" }, onOpenSettings = openSettings, onShowDownloadProgress = {},
                         remoteControlState = remote, onRemoteSettings = { permissionDialog = PermissionDialog.REMOTE_EXPLANATION }, onRemoteRetry = {})
                 }
+                if (startupGuide && permissionDialog == null) StartupPermissionDialog(
+                    StartupPermissionState(checked = true, showing = true), startupSnapshot, remote, false,
+                    onAudio = { startupSnapshot = startupSnapshot.copy(audioGranted = true) },
+                    onNotifications = { startupSnapshot = startupSnapshot.copy(notificationsGranted = true) },
+                    onRemote = { permissionDialog = PermissionDialog.REMOTE_EXPLANATION },
+                    onContinue = { startupGuide = false }, onDefer = { startupGuide = false })
                 permissionDialog?.let { kind -> CapturePermissionDialog(kind, { permissionDialog = null },
                     { permissionDialog = null }, { permissionDialog = null }, { permissionDialog = null }, { permissionDialog = null }) }
             }

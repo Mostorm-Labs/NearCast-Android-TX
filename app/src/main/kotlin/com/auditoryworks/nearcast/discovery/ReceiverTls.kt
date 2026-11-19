@@ -74,7 +74,7 @@ class ReceiverTls(private val sockets: (ReceiverDevice) -> SocketFactory = { Soc
     private fun fingerprint(certificate: X509Certificate) = MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
         .joinToString("") { "%02X".format(it) }
     // Observation sends no HTTP. Every HTTP connection requires the exact observed or saved
-    // SHA256(DER SPKI), matching Desktop's physical confirmation model for self-signed receivers.
+    // SHA256(DER SPKI), matching Desktop's selected-device bootstrap and pinned requests.
     private fun verifier(expected: String?) = object : X509TrustManager {
         override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) { throw CertificateException("No client authentication") }

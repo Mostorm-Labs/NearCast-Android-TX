@@ -1,6 +1,5 @@
 package com.auditoryworks.nearcast.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -12,25 +11,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.auditoryworks.nearcast.R
 import com.auditoryworks.nearcast.discovery.*
 import com.auditoryworks.nearcast.ui.components.*
 import com.auditoryworks.nearcast.ui.theme.CastColors
 
-/** Appears only for preparation, a required first-use trust check, or a recoverable error. */
+/** Automatic pairing runs inline; this sheet is for device options or recoverable errors only. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReceiverConnectionSheet(action: ReceiverActionState, onConfirm: (Boolean) -> Unit,
-    onTrust: () -> Unit, onCode: () -> Unit, onForget: () -> Unit,
-    onLocalEntry: (ReceiverDevice) -> Unit, onManualEntry: () -> Unit, onDismiss: () -> Unit,
-    manageDevice: Boolean = false) {
+fun ReceiverConnectionSheet(action: ReceiverActionState, onRetry: () -> Unit, onCode: () -> Unit,
+    onForget: () -> Unit, onLocalEntry: (ReceiverDevice) -> Unit, onManualEntry: () -> Unit,
+    onDismiss: () -> Unit, manageDevice: Boolean = false) {
     val device = action.device ?: return
     val busy = action.phase in setOf(ReceiverPhase.CHECKING, ReceiverPhase.PREPARING, ReceiverPhase.SAVING, ReceiverPhase.SHOWING) ||
         action.phase == ReceiverPhase.SHOWN && !manageDevice
-    var compared by remember(action.candidate) { mutableStateOf(false) }
     var options by remember(device.deviceId) { mutableStateOf(manageDevice) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = Color(0xFF171C2B), tonalElevation = 0.dp) {
@@ -42,9 +37,7 @@ fun ReceiverConnectionSheet(action: ReceiverActionState, onConfirm: (Boolean) ->
                 IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, stringResource(R.string.permission_close)) }
             }
             val status = when (action.phase) {
-                ReceiverPhase.CHECKING -> R.string.discovery_checking
-                ReceiverPhase.PREPARING -> R.string.discovery_preparing
-                ReceiverPhase.COMPARE -> R.string.discovery_compare
+                ReceiverPhase.CHECKING, ReceiverPhase.PREPARING, ReceiverPhase.COMPARE -> R.string.discovery_checking
                 ReceiverPhase.SAVING -> R.string.discovery_saving
                 ReceiverPhase.SHOWING -> R.string.discovery_showing
                 ReceiverPhase.SHOWN -> R.string.discovery_shown
@@ -65,42 +58,27 @@ fun ReceiverConnectionSheet(action: ReceiverActionState, onConfirm: (Boolean) ->
             Text(stringResource(status), color = CastColors.Muted, style = MaterialTheme.typography.bodyMedium)
             if (busy) {
                 CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).size(24.dp), strokeWidth = 2.dp, color = CastColors.Accent)
-            } else if (action.phase == ReceiverPhase.COMPARE) {
-                if (action.previousFingerprint != null && action.previousFingerprint != action.fingerprint) {
-                    Text(stringResource(R.string.discovery_replacing_key), color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                CastInsetPanel {
-                    Text(action.candidate!!.fingerprint.chunked(4).chunked(4).joinToString("\n") { it.joinToString(" ") },
-                        Modifier.fillMaxWidth(), fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(compared, onCheckedChange = { compared = it })
-                    Text(stringResource(R.string.discovery_compared), Modifier.weight(1f).clickable { compared = !compared },
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                CastPrimaryButton(onClick = { onConfirm(compared) }, enabled = compared, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(R.string.discovery_confirm))
-                }
             } else {
-                val trusted = action.fingerprint != null && action.candidate == null &&
+                val paired = action.fingerprint != null && action.candidate == null &&
                     action.phase !in setOf(ReceiverPhase.KEY_CHANGED, ReceiverPhase.EXPIRED, ReceiverPhase.UNTRUSTED, ReceiverPhase.OFFLINE)
-                if (trusted && device.localReady != false) {
+                if (paired && device.localReady != false) {
                     CastPrimaryButton(onClick = { onLocalEntry(device) }, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.ui_enter_existing_code))
                     }
                 }
-                if (trusted && device.supportsCodeDisplay) {
-                    CastSecondaryButton(onClick = onCode, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.ui_retry)) }
-                } else if (device.supportsTrustDisplay && action.phase != ReceiverPhase.OFFLINE) {
-                    CastPrimaryButton(onClick = onTrust, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.discovery_verify)) }
+                if (action.phase == ReceiverPhase.KEY_CHANGED) {
+                    CastPrimaryButton(onClick = onForget, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.discovery_forget))
+                    }
+                } else if (action.phase != ReceiverPhase.OFFLINE && device.selectable) {
+                    CastSecondaryButton(onClick = if (paired && device.supportsCodeDisplay) onCode else onRetry,
+                        modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.ui_retry)) }
                 }
                 if (device.localReady == false) Text(stringResource(R.string.local_unavailable), color = MaterialTheme.colorScheme.error)
                 if (action.fingerprint != null || action.previousFingerprint != null) {
                     TextButton(onClick = { options = !options }) { Text(stringResource(R.string.ui_device_options)) }
-                    if (options) {
-                        if (device.supportsTrustDisplay && action.phase != ReceiverPhase.OFFLINE) TextButton(onClick = onTrust) { Text(stringResource(R.string.discovery_verify)) }
+                    if (options && action.phase != ReceiverPhase.KEY_CHANGED) {
+                        if (action.phase != ReceiverPhase.OFFLINE) TextButton(onClick = onRetry) { Text(stringResource(R.string.discovery_verify)) }
                         TextButton(onClick = onForget) { Text(stringResource(R.string.discovery_forget), color = MaterialTheme.colorScheme.error) }
                     }
                 }

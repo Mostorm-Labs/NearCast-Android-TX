@@ -19,13 +19,11 @@ data class ReceiverActionState(val phase: ReceiverPhase = ReceiverPhase.NONE, va
     val candidate: TrustCandidate? = null, val fingerprint: String? = null, val previousFingerprint: String? = null,
     val failure: ReceiverFailure? = null)
 class ReceiverActions(private val scope: CoroutineScope, private val transport: ReceiverTransport, private val pins: ReceiverPins,
-    private val lookup: (String) -> ReceiverDevice?, private val now: () -> Long = { System.nanoTime() / 1_000_000 }) {
+    private val lookup: (String) -> ReceiverDevice?) {
     private val mutableState = MutableStateFlow(ReceiverActionState())
     val state: StateFlow<ReceiverActionState> = mutableState
-    private val candidates = TrustCandidates(now)
     private var generation = 0L
     private var job: Job? = null
-    private var expiry: Job? = null
     private class Offline : Exception()
     // Serialize persistence and pinned requests across Activity instances. Revocation waits
     // for an in-flight request; queued requests re-read the pin after acquiring this lock.
@@ -34,10 +32,9 @@ class ReceiverActions(private val scope: CoroutineScope, private val transport: 
         if (token != generation) throw CancellationException()
         return lookup(device.instance)?.takeIf { it.routeKey == device.routeKey && it.capabilities == device.capabilities } ?: throw Offline()
     }
-    private fun run(device: ReceiverDevice, phase: ReceiverPhase, keepCandidate: Boolean = false, checkLive: Boolean = true, block: suspend (Long) -> Unit) {
-        job?.cancel(); expiry?.cancel(); val token = ++generation
-        if (!keepCandidate) candidates.cancel()
-        mutableState.value = state.value.copy(phase = phase, device = device, candidate = if (keepCandidate) state.value.candidate else null, failure = null)
+    private fun run(device: ReceiverDevice, phase: ReceiverPhase, checkLive: Boolean = true, block: suspend (Long) -> Unit) {
+        job?.cancel(); val token = ++generation
+        mutableState.value = state.value.copy(phase = phase, device = device, candidate = null, failure = null)
         job = scope.launch {
             try { trustLock.withLock { if (checkLive) current(device, token); else if (token != generation) throw CancellationException(); block(token) } }
             catch (_: TimeoutCancellationException) {
@@ -55,39 +52,29 @@ class ReceiverActions(private val scope: CoroutineScope, private val transport: 
     fun select(device: ReceiverDevice) {
         cancel()
         run(device, ReceiverPhase.CHECKING) { token ->
-            if (!device.selectable || device.deviceId == null) { mutableState.value = state.value.copy(phase = ReceiverPhase.UNSUPPORTED); return@run }
-            val pin = pins.get(device.deviceId)
-            if (pin != null) { require(validFingerprint(pin)); mutableState.value = state.value.copy(fingerprint = pin); code(device, token) }
-            else prepare(device, token)
-        }
-    }
-    private suspend fun prepare(device: ReceiverDevice, token: Long) {
-        val receiver = current(device, token)
-        if (!receiver.supportsTrustDisplay || receiver.deviceId == null) { mutableState.value = state.value.copy(phase = ReceiverPhase.UNSUPPORTED); return }
-        mutableState.value = state.value.copy(phase = ReceiverPhase.PREPARING)
-        val candidateGeneration = candidates.begin()
-        val fingerprint = transport.observe(receiver); current(receiver, token); require(validFingerprint(fingerprint))
-        val requestId = UUID.randomUUID().toString()
-        val bytes = transport.post(receiver, DisplayOperation.TRUST, DisplayProtocol.request(DisplayOperation.TRUST, receiver.deviceId, requestId), fingerprint)
-        current(receiver, token)
-        val result = DisplayProtocol.response(DisplayOperation.TRUST, requestId, bytes)
-        if (result != "shown") { result(result); return }
-        val candidate = candidates.offer(candidateGeneration, receiver, fingerprint) ?: throw CancellationException()
-        mutableState.value = state.value.copy(phase = ReceiverPhase.COMPARE, candidate = candidate, fingerprint = fingerprint, previousFingerprint = pins.get(receiver.deviceId))
-        expiry = scope.launch {
-            delay(60000)
-            if (state.value.candidate === candidate) { candidates.cancel(); mutableState.value = state.value.copy(phase = ReceiverPhase.EXPIRED, candidate = null) }
-        }
-    }
-    fun confirm(compared: Boolean) {
-        val candidate = state.value.candidate ?: return
-        if (!compared) return
-        run(candidate.device, ReceiverPhase.SAVING, keepCandidate = true) { token ->
-            val receiver = current(candidate.device, token)
-            if (!candidates.confirm(candidate, receiver, true)) { mutableState.value = state.value.copy(phase = ReceiverPhase.EXPIRED, candidate = null); return@run }
-            pins.save(receiver.deviceId!!, candidate.fingerprint)
-            mutableState.value = state.value.copy(fingerprint = candidate.fingerprint, candidate = null)
-            code(receiver, token)
+            if (!device.selectable || device.deviceId == null || !validIdentity(device.deviceId)) {
+                mutableState.value = state.value.copy(phase = ReceiverPhase.UNSUPPORTED); return@run
+            }
+            val saved = pins.get(device.deviceId)
+            if (saved != null) require(validFingerprint(saved))
+            mutableState.value = state.value.copy(fingerprint = saved)
+            // Match Desktop's automatic pairing: observe the exact selected route without HTTP,
+            // retain its SPKI key, then pin every code and local signaling request to that key.
+            val observed = transport.observe(current(device, token))
+            current(device, token)
+            require(validFingerprint(observed))
+            if (pins.get(device.deviceId) != saved) {
+                mutableState.value = state.value.copy(phase = ReceiverPhase.UNTRUSTED, fingerprint = null, previousFingerprint = null)
+                return@run
+            }
+            if (saved != null && saved != observed) throw ReceiverKeyChanged()
+            if (saved == null) {
+                mutableState.value = state.value.copy(phase = ReceiverPhase.SAVING)
+                pins.save(device.deviceId, observed)
+            }
+            current(device, token)
+            mutableState.value = state.value.copy(fingerprint = observed)
+            code(device, token)
         }
     }
     private suspend fun code(device: ReceiverDevice, token: Long) {
@@ -105,12 +92,12 @@ class ReceiverActions(private val scope: CoroutineScope, private val transport: 
     private fun result(status: String) { mutableState.value = state.value.copy(candidate = null, phase = when (status) {
         "shown" -> ReceiverPhase.SHOWN; "unavailable" -> ReceiverPhase.UNAVAILABLE; "rate_limited" -> ReceiverPhase.RATE_LIMITED; else -> ReceiverPhase.UNSUPPORTED
     }) }
-    fun retryTrust() { state.value.device?.let { device -> run(device, ReceiverPhase.PREPARING) { prepare(device, it) } } }
+    fun retryTrust() { state.value.device?.let(::select) }
     fun showCode() { state.value.device?.let { device -> run(device, ReceiverPhase.SHOWING) { code(device, it) } } }
     fun forget() { state.value.device?.let { device -> run(device, ReceiverPhase.SAVING, checkLive = false) {
         device.deviceId?.let(pins::revoke); mutableState.value = state.value.copy(phase = ReceiverPhase.UNTRUSTED, fingerprint = null, previousFingerprint = null)
     } } }
-    fun cancel() { generation++; job?.cancel(); job = null; expiry?.cancel(); expiry = null; candidates.cancel(); mutableState.value = ReceiverActionState() }
+    fun cancel() { generation++; job?.cancel(); job = null; mutableState.value = ReceiverActionState() }
     fun devicesChanged() {
         val device = state.value.device ?: return
         val actual = lookup(device.instance)

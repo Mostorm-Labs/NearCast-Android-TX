@@ -75,12 +75,15 @@ NearCast-Android-TX/
 1. 用 Android Studio 打开 `NearCast-Android-TX` 目录
 2. 等待 Gradle 同步完成
 3. 连接 Android 手机，运行 App
-4. 在 NearHub 接收端上查看投屏码（pairCode）
-5. 在 App 中输入投屏码，点击 **Join Room**
-6. P2P 连接建立后，点击 **Start Screen Cast**
-7. 授权录屏权限，开始投屏
+4. 首次启动或缺少必要权限时，按“投屏权限检查”引导授权；通知和反控为可选项
+5. 在 NearHub 接收端上查看投屏码（pairCode）
+6. 在 App 中输入投屏码，点击 **连接接收端**
+7. P2P 连接建立后，点击 **开始投屏**
+8. 在系统选择器中授权本次屏幕采集，开始投屏
 
-首页可点击“发现接收端”，选择同网 NearCast 设备，现场核对完整指纹，再点击“使用此设备的本地配对码”。输入接收端的本地码后，使用已确认公钥的本地 WSS 配对与 WebRTC 投屏；云端码可通过“改用云端配对码”独立连接。详见[设备发现、本地投屏与信任](docs/device-discovery.md)。
+首页“附近设备”直接列出同网 NearCast 接收端。选择后在后台完成设备密钥绑定并请求显示本地配对码，自动返回输码页，不再弹指纹核对和勾选确认。输入本地码后使用固定公钥的本地 WSS 与 WebRTC 投屏；取消设备选择可独立使用云端配对码。详见[设备发现、本地投屏与信任](docs/device-discovery.md)。
+
+启动检查会读取实际音频、通知及无障碍授权状态，可从设置重新查看。Android 屏幕采集需要每次新建采集时授权，启动检查不会提前录屏或缓存录屏授权。详见[启动权限检查](docs/startup-permissions.md)。
 
 控制通道建立时声明真实 Android 移动客户端身份；整屏校准成功后更新共享来源，并响应 RX 的反控请求。无需伪装成 Windows，详见[安卓反控](docs/remote-control.md)。
 
